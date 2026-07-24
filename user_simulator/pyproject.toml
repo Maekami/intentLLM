@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reason-dag-user-simulator"
+version = "0.1.0"
+description = "Auditable reason-DAG user simulator"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "openai>=1.50",
+  "pydantic>=2.8",
+  "pydantic-settings>=2.4",
+  "PyYAML>=6.0",
+  "python-dotenv>=1.0",
+  "tenacity>=8.5",
+  "typer>=0.12",
+  "rich>=13.8",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+reason-dag-demo = "user_simulator.cli.demo:app"
+reason-dag-validate = "user_simulator.cli.validate_dataset:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = ["live: requires an OpenRouter API key"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+ignore = ["B008"]

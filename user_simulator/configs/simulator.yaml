@@ -1,0 +1,27 @@
+dataset_path: dataset/DAG.jsonl
+
+components:
+  controller: llm_controller
+  satisfaction_updater: llm_satisfaction_updater
+  user_realizer: llm_user_realizer
+  selection_policy: difficulty_selection_v1
+  realization_policy: difficulty_realization_v1
+
+models:
+  controller: deepseek_v4_pro
+  satisfaction: deepseek_v4_pro
+  realizer_clear: deepseek_v4_pro
+  realizer_abstract: deepseek_v4_pro
+
+policy:
+  medium_clear_probability: 0.5
+  monotonic_satisfaction: true
+  auto_expose_backbone_on_empty_queue: true
+  enforce_controller_prefix_closure: true
+  max_turns: 20
+
+audit:
+  enabled: true
+  level: full
+  output_dir: runs
+

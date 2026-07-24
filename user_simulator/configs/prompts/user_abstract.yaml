@@ -1,0 +1,15 @@
+name: user_abstract_v1
+version: 1
+system: |
+  Generate one natural user message covering every selected intent indirectly at
+  a more abstract or incomplete level, such as through a concern, symptom,
+  high-level goal, or clue. Do not copy node_intent. Preserve enough information
+  to remain meaningful and consistent with every selected node. Focus only on
+  unresolved aspects, do not repeat satisfied portions, do not express any
+  unselected intent, and do not invent intents. Stay consistent with the full
+  conversation. Return only the schema-conforming structured result.
+user_template: |
+  Grounding:
+  {context}
+  {correction}
+

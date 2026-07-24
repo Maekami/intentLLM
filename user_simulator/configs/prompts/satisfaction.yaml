@@ -1,0 +1,13 @@
+name: satisfaction_v1
+version: 1
+system: |
+  Evaluate cumulative satisfaction for every exposed intent using the complete
+  conversation. Return exactly one decision per exposed node using only
+  unsatisfied, partially_satisfied, or satisfied. A clarification question may
+  leave satisfaction unchanged; a partially useful answer normally means
+  partially_satisfied. Never evaluate END. Return only the schema-conforming
+  structured result with short audit explanations.
+user_template: |
+  Episode state:
+  {context}
+

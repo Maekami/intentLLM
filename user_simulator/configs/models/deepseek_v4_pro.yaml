@@ -1,0 +1,36 @@
+profile_name: deepseek_v4_pro
+provider: openrouter
+model_id: deepseek/deepseek-v4-pro
+base_url: https://openrouter.ai/api/v1
+
+routing:
+  require_parameters: true
+  allow_fallbacks: true
+
+reasoning:
+  effort: high
+  exclude_from_response: true
+
+generation:
+  controller:
+    temperature: 0.0
+    max_completion_tokens: 1600
+  satisfaction:
+    temperature: 0.0
+    max_completion_tokens: 2000
+  realizer_clear:
+    temperature: 0.3
+    max_completion_tokens: 800
+  realizer_abstract:
+    temperature: 0.7
+    max_completion_tokens: 800
+
+structured_output:
+  type: json_schema
+  strict: true
+
+retry:
+  max_attempts: 3
+  initial_backoff_seconds: 1.0
+  maximum_backoff_seconds: 8.0
+

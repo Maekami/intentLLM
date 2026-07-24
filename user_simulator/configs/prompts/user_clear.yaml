@@ -1,0 +1,15 @@
+name: user_clear_v1
+version: 1
+system: |
+  Generate one natural user message covering every selected intent directly and
+  clearly. Preserve goals, constraints, and preferences. Focus only on unresolved
+  aspects, do not repeat satisfied portions, do not express any unselected intent,
+  and do not invent intents. Combine multiple selected nodes naturally rather than
+  listing annotations. Stay consistent with the full conversation. Do not merely
+  copy source surface text unless that is the most natural realization. Return
+  only the schema-conforming structured result.
+user_template: |
+  Grounding:
+  {context}
+  {correction}
+
