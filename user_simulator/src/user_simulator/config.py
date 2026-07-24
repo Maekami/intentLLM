@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,6 +18,14 @@ class RetrySettings(BaseModel):
     maximum_backoff_seconds: float = 8.0
 
 
+class StructuredOutputSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["json_schema"] = "json_schema"
+    strict: Literal[True] = True
+    require_parameters: Literal[True] = True
+
+
 class ModelProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -28,7 +36,7 @@ class ModelProfile(BaseModel):
     routing: dict[str, bool]
     reasoning: dict[str, Any]
     generation: dict[str, GenerationSettings]
-    structured_output: dict[str, Any]
+    structured_output: StructuredOutputSettings
     retry: RetrySettings
 
 
@@ -46,11 +54,31 @@ class AuditSettings(BaseModel):
     output_dir: str = "runs"
 
 
+class ComponentSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    controller: str = "llm_controller"
+    satisfaction_updater: str = "llm_satisfaction_updater"
+    selection_policy: str = "difficulty_selection_v1"
+    realization_policy: str = "difficulty_realization_v1"
+    user_realizer: str = "llm_user_realizer"
+
+
+class PromptSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    controller: str
+    satisfaction: str
+    realizer_clear: str
+    realizer_abstract: str
+
+
 class SimulatorConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dataset_path: str = "dataset/DAG.jsonl"
-    components: dict[str, str]
+    components: ComponentSettings
+    prompts: PromptSettings
     models: dict[str, str]
     policy: PolicySettings
     audit: AuditSettings

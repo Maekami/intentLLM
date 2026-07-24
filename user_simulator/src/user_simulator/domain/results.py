@@ -1,22 +1,25 @@
 from pydantic import BaseModel, ConfigDict, Field
 
-from user_simulator.domain.enums import RealizationMode, SatisfactionLevel
+from user_simulator.llm.schemas import (
+    CandidateExposureDecisionV2,
+    ControllerResultV2,
+    NodeCoverageDecisionV2,
+    NodeSatisfactionDecisionV2,
+    SatisfactionUpdateResultV2,
+    UserGenerationResultV2,
+)
 
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class CandidateExposureDecision(StrictModel):
-    node_id: str = Field(description="Candidate intent node ID")
-    exposable: bool = Field(description="Whether conversation supports exposing this node")
-    reason: str = Field(description="Short audit explanation")
-
-
-class ControllerResult(StrictModel):
-    decisions: list[CandidateExposureDecision]
-    end_reachable: bool = Field(description="Structural END reachability, not termination")
-    summary: str = Field(description="Concise audit summary")
+CandidateExposureDecision = CandidateExposureDecisionV2
+ControllerResult = ControllerResultV2
+NodeSatisfactionDecision = NodeSatisfactionDecisionV2
+SatisfactionUpdateResult = SatisfactionUpdateResultV2
+NodeCoverageDecision = NodeCoverageDecisionV2
+UserGenerationResult = UserGenerationResultV2
 
 
 class NormalizedControllerResult(StrictModel):
@@ -25,26 +28,6 @@ class NormalizedControllerResult(StrictModel):
     end_reachable: bool
     violations: list[str] = Field(default_factory=list)
     summary: str
-
-
-class NodeSatisfactionDecision(StrictModel):
-    node_id: str = Field(description="Exposed intent node ID")
-    status: SatisfactionLevel
-    reason: str = Field(description="Short audit explanation")
-
-
-class SatisfactionUpdateResult(StrictModel):
-    updates: list[NodeSatisfactionDecision]
-    summary: str = Field(description="Concise audit summary")
-
-
-class UserGenerationResult(StrictModel):
-    user_message: str = Field(min_length=1)
-    selected_node_ids: list[str]
-    realization_mode: RealizationMode
-    coverage_check: dict[str, bool]
-    contains_unsupported_intent: bool
-    summary: str = Field(description="Concise audit summary")
 
 
 class SelectionResult(StrictModel):

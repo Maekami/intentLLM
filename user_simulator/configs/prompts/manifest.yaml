@@ -1,0 +1,12 @@
+configs/prompts/controller_v2.yaml:
+  version: 2
+  source_hash: 597c772b5278dddb9ddeaa90c77d100dea7b691cd201003f0fd3a75c91ec581a
+configs/prompts/satisfaction_v2.yaml:
+  version: 2
+  source_hash: 96a20d77c36bed009a1a8825392da0bd20c1cd349a755d7f3ae95aa66a6feb1c
+configs/prompts/user_abstract_v2.yaml:
+  version: 2
+  source_hash: 74d8973a19ddb310f439b33af4777e8859fcd855742968f3dbb8244f4e9c5a57
+configs/prompts/user_clear_v2.yaml:
+  version: 2
+  source_hash: ca60fb0f678a6e0dfc3f78e20301d6136a859823cdf327cbaa4fde22267dfc41

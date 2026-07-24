@@ -51,7 +51,7 @@ async def test_complete_episode_exposes_multiple_and_terminates(tmp_path) -> Non
             "user_message": "Can you help with a plan?",
             "selected_node_ids": ["N1"],
             "realization_mode": "clear",
-            "coverage_check": {"N1": True},
+            "coverage": [{"node_id": "N1", "covered": True}],
             "contains_unsupported_intent": False,
             "summary": "initial",
         },
@@ -65,9 +65,21 @@ async def test_complete_episode_exposes_multiple_and_terminates(tmp_path) -> Non
         },
         {
             "updates": [
-                {"node_id": "N1", "status": "partially_satisfied", "reason": "partial"},
-                {"node_id": "N2", "status": "unsatisfied", "reason": "new"},
-                {"node_id": "N3", "status": "unsatisfied", "reason": "new"},
+                {
+                    "node_id": "N1",
+                    "status": "partially_satisfied",
+                    "reason": "The assistant offered a useful outline but omitted constraints.",
+                },
+                {
+                    "node_id": "N2",
+                    "status": "unsatisfied",
+                    "reason": "The assistant has not addressed this newly exposed constraint.",
+                },
+                {
+                    "node_id": "N3",
+                    "status": "unsatisfied",
+                    "reason": "The assistant has not supplied the requested final output.",
+                },
             ],
             "summary": "not done",
         },
@@ -75,7 +87,11 @@ async def test_complete_episode_exposes_multiple_and_terminates(tmp_path) -> Non
             "user_message": "Please finish the plan with my constraint and final output.",
             "selected_node_ids": ["N1", "N2", "N3"],
             "realization_mode": "clear",
-            "coverage_check": {"N1": True, "N2": True, "N3": True},
+            "coverage": [
+                {"node_id": "N1", "covered": True},
+                {"node_id": "N2", "covered": True},
+                {"node_id": "N3", "covered": True},
+            ],
             "contains_unsupported_intent": False,
             "summary": "followup",
         },
@@ -86,9 +102,21 @@ async def test_complete_episode_exposes_multiple_and_terminates(tmp_path) -> Non
         },
         {
             "updates": [
-                {"node_id": "N1", "status": "satisfied", "reason": "done"},
-                {"node_id": "N2", "status": "satisfied", "reason": "done"},
-                {"node_id": "N3", "status": "satisfied", "reason": "done"},
+                {
+                    "node_id": "N1",
+                    "status": "satisfied",
+                    "reason": "The assistant supplied the complete requested plan.",
+                },
+                {
+                    "node_id": "N2",
+                    "status": "satisfied",
+                    "reason": "The assistant incorporated the important stated constraint.",
+                },
+                {
+                    "node_id": "N3",
+                    "status": "satisfied",
+                    "reason": "The assistant delivered the requested final output.",
+                },
             ],
             "summary": "all done",
         },
@@ -110,6 +138,7 @@ async def test_complete_episode_exposes_multiple_and_terminates(tmp_path) -> Non
     )
     initial = await episode.start()
     assert initial.user_message
+    assert "INITIAL TURN" in client.calls[0]["messages"][-1]["content"]
     followup = await episode.submit_assistant("Tell me the relevant details.")
     assert episode.state.exposed_nodes == ["N1", "N2", "N3"]
     assert not followup.terminal
@@ -134,7 +163,7 @@ async def test_natural_backbone_exposure() -> None:
             "user_message": "Help.",
             "selected_node_ids": ["N1"],
             "realization_mode": "clear",
-            "coverage_check": {"N1": True},
+            "coverage": [{"node_id": "N1", "covered": True}],
             "contains_unsupported_intent": False,
             "summary": "initial",
         },
@@ -147,14 +176,20 @@ async def test_natural_backbone_exposure() -> None:
             "summary": "none",
         },
         {
-            "updates": [{"node_id": "N1", "status": "satisfied", "reason": "done"}],
+            "updates": [
+                {
+                    "node_id": "N1",
+                    "status": "satisfied",
+                    "reason": "The assistant fully addressed the first exposed need.",
+                }
+            ],
             "summary": "done",
         },
         {
             "user_message": "There is another constraint.",
             "selected_node_ids": ["N2"],
             "realization_mode": "clear",
-            "coverage_check": {"N2": True},
+            "coverage": [{"node_id": "N2", "covered": True}],
             "contains_unsupported_intent": False,
             "summary": "next",
         },

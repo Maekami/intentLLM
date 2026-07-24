@@ -6,6 +6,10 @@ class DatasetValidationError(SimulatorError):
     pass
 
 
+class ConfigurationError(SimulatorError):
+    pass
+
+
 class GraphInvariantError(SimulatorError):
     pass
 

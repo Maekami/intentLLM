@@ -98,7 +98,7 @@ class Episode:
                 0,
                 {
                     "raw_response": generation.model_dump(mode="json"),
-                    "llm_call": self._llm_metadata(self.user_realizer),
+                    "llm_call": self._llm_metadata(self.user_realizer, "user_realizer"),
                 },
             )
             message = ChatMessage(role="user", content=generation.user_message)
@@ -139,7 +139,6 @@ class Episode:
         self.audit.log_message(latest, turn)
         self.audit.log("assistant_message_received", turn, {"assistant_message": response})
         frontier_before = self.state.current_frontier
-        satisfaction_before = dict(self.state.satisfaction)
         try:
             candidate_ids, has_end_edge = self.navigator.outgoing(frontier_before)
             candidates = [self.navigator.node(item) for item in candidate_ids]
@@ -159,15 +158,17 @@ class Episode:
                 candidates=candidates,
                 has_end_edge=has_end_edge,
             )
+            normalized = normalize_controller_result(raw_controller, candidate_ids, has_end_edge)
+            controller_metadata = self._llm_metadata(self.controller, "controller")
+            controller_metadata["normalization_violations"] = normalized.violations
             self.audit.log(
                 "controller_raw_result",
                 turn,
                 {
                     "raw_response": raw_controller.model_dump(mode="json"),
-                    "llm_call": self._llm_metadata(self.controller),
+                    "llm_call": controller_metadata,
                 },
             )
-            normalized = normalize_controller_result(raw_controller, candidate_ids, has_end_edge)
             self.audit.log(
                 "controller_prefix_normalized",
                 turn,
@@ -197,19 +198,12 @@ class Episode:
                 turn,
                 {"exposed_nodes": self.state.exposed_nodes},
             )
+            satisfaction_before_update = dict(self.state.satisfaction)
             raw_satisfaction = await self.satisfaction_updater.update(
                 history=self.state.conversation_history,
                 latest_assistant_response=response,
                 state=self.state,
                 exposed_nodes=[self.navigator.node(item) for item in self.state.exposed_nodes],
-            )
-            self.audit.log(
-                "satisfaction_raw_result",
-                turn,
-                {
-                    "raw_response": raw_satisfaction.model_dump(mode="json"),
-                    "llm_call": self._llm_metadata(self.satisfaction_updater),
-                },
             )
             applied, satisfaction_violations = apply_satisfaction_updates(
                 self.state.satisfaction,
@@ -217,12 +211,27 @@ class Episode:
                 self.state.exposed_nodes,
                 monotonic=self.monotonic_satisfaction,
             )
+            satisfaction_metadata = self._llm_metadata(self.satisfaction_updater, "satisfaction")
+            satisfaction_metadata["normalization_violations"] = satisfaction_violations
+            self.audit.log(
+                "satisfaction_raw_result",
+                turn,
+                {
+                    "raw_response": raw_satisfaction.model_dump(mode="json"),
+                    "llm_call": satisfaction_metadata,
+                },
+            )
             self.state.satisfaction = applied
             self.audit.log(
                 "satisfaction_applied",
                 turn,
                 {
-                    "before": {key: value.value for key, value in satisfaction_before.items()},
+                    "before": {
+                        key: value.value for key, value in satisfaction_before_update.items()
+                    },
+                    "proposed": {
+                        item.node_id: item.status.value for item in raw_satisfaction.updates
+                    },
                     "after": {key: value.value for key, value in applied.items()},
                     "violations": satisfaction_violations,
                 },
@@ -278,6 +287,7 @@ class Episode:
                 {
                     "difficulty": self.state.difficulty.value,
                     "selected_nodes": selected_ids,
+                    "selection_rule": type(self.selection_policy).__name__,
                 },
             )
             mode = self.realization_policy.choose_mode(self.state.difficulty, self.rng)
@@ -306,7 +316,7 @@ class Episode:
                 turn,
                 {
                     "raw_response": generation.model_dump(mode="json"),
-                    "llm_call": self._llm_metadata(self.user_realizer),
+                    "llm_call": self._llm_metadata(self.user_realizer, "user_realizer"),
                 },
             )
             message = ChatMessage(role="user", content=generation.user_message)
@@ -336,18 +346,40 @@ class Episode:
         }
 
     @staticmethod
-    def _llm_metadata(component: Any) -> dict[str, Any]:
+    def _llm_metadata(component: Any, component_name: str) -> dict[str, Any]:
         direct = getattr(component, "last_call_metadata", None)
         if isinstance(direct, dict) and direct:
-            return dict(direct)
-        client = getattr(component, "client", None)
-        metadata = getattr(client, "last_call_metadata", {})
-        return dict(metadata) if isinstance(metadata, dict) else {}
+            metadata = dict(direct)
+        else:
+            client = getattr(component, "client", None)
+            client_metadata = getattr(client, "last_call_metadata", {})
+            metadata = dict(client_metadata) if isinstance(client_metadata, dict) else {}
+        semantic_events = getattr(component, "semantic_events", [])
+        metadata["component"] = component_name
+        metadata.setdefault("normalization_violations", [])
+        metadata["semantic_events"] = semantic_events
+        if semantic_events:
+            metadata["semantic_retry_count"] = max(0, len(semantic_events) - 1)
+            metadata["semantic_validation_status"] = (
+                "valid" if semantic_events[-1].get("semantic_error") is None else "invalid"
+            )
+        else:
+            metadata.setdefault("semantic_retry_count", 0)
+            metadata.setdefault("semantic_validation_status", "valid")
+        return metadata
 
     def _fail(self, exc: Exception) -> None:
         self.audit.log(
             "episode_failed",
             self.state.turn_index,
-            {"error_type": type(exc).__name__, "message": str(exc)},
+            {
+                "error_type": type(exc).__name__,
+                "message": str(exc),
+                "component_calls": {
+                    "controller": self._llm_metadata(self.controller, "controller"),
+                    "satisfaction": self._llm_metadata(self.satisfaction_updater, "satisfaction"),
+                    "user_realizer": self._llm_metadata(self.user_realizer, "user_realizer"),
+                },
+            },
         )
         self.audit.save_state(self.state)

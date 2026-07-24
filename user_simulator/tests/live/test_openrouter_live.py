@@ -36,7 +36,7 @@ pytestmark = [
             UserGenerationResult,
             "realizer_live",
             """Return user_message="Hello", selected_node_ids=[],
-realization_mode="clear", coverage_check={},
+realization_mode="clear", coverage=[],
 contains_unsupported_intent=false, summary="ok".""",
         ),
     ],
@@ -54,3 +54,7 @@ async def test_strict_structured_output(schema, name, instruction) -> None:
         generation=GenerationSettings(temperature=0, max_completion_tokens=200),
     )
     assert isinstance(result, schema)
+    assert client.last_call_metadata["structured_validation_status"] == "valid"
+    assert client.last_call_metadata["require_parameters"] is True
+    assert "input_tokens" in client.last_call_metadata
+    assert "output_tokens" in client.last_call_metadata

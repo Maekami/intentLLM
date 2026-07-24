@@ -1,3 +1,4 @@
+import json
 from collections import deque
 from typing import Any, TypeVar
 
@@ -5,6 +6,7 @@ from pydantic import BaseModel
 
 from user_simulator.config import GenerationSettings
 from user_simulator.exceptions import StructuredOutputError
+from user_simulator.llm.schema_utils import schema_hash
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -23,6 +25,7 @@ class MockStructuredLLMClient:
         messages: list[dict[str, str]],
         response_model: type[T],
         schema_name: str,
+        schema_version: int = 2,
         generation: GenerationSettings,
         prompt_metadata: dict[str, Any] | None = None,
     ) -> T:
@@ -31,15 +34,19 @@ class MockStructuredLLMClient:
                 "messages": messages,
                 "response_model": response_model.__name__,
                 "schema_name": schema_name,
+                "schema_version": schema_version,
                 "generation": generation.model_dump(),
                 "prompt_metadata": prompt_metadata or {},
             }
         )
         self.last_call_metadata = {
             **(prompt_metadata or {}),
-            "component_schema": schema_name,
+            "schema_name": schema_name,
+            "schema_version": schema_version,
+            "schema_hash": schema_hash(response_model),
             "model_id": "mock",
-            "retry_count": 0,
+            "model_profile": "mock",
+            "transport_retry_count": 0,
             "structured_validation_status": "valid",
             "messages": messages,
         }
@@ -48,6 +55,6 @@ class MockStructuredLLMClient:
         value = self.responses.popleft()
         if isinstance(value, BaseModel):
             value = value.model_dump()
-        result = response_model.model_validate(value)
+        result = response_model.model_validate_json(json.dumps(value))
         self.last_call_metadata["raw_response"] = result.model_dump(mode="json")
         return result

@@ -82,8 +82,10 @@ def _sanitize(value: Any, *, full: bool) -> Any:
             lower = str(key).lower()
             if "api_key" in lower or lower == "authorization":
                 result[key] = "<redacted>"
-            elif not full and lower in {"rendered_prompt", "messages", "raw_response"}:
+            elif not full and lower in {"rendered_prompt", "messages"}:
                 result[key] = "<hidden at summary audit level>"
+            elif not full and lower == "raw_response":
+                result[key] = _summarize_raw_response(item)
             else:
                 result[key] = _sanitize(item, full=full)
         return result
@@ -92,3 +94,19 @@ def _sanitize(value: Any, *, full: bool) -> Any:
     if hasattr(value, "model_dump"):
         return _sanitize(value.model_dump(mode="json"), full=full)
     return value
+
+
+def _summarize_raw_response(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return "<hidden at summary audit level>"
+    allowed = {
+        "decisions",
+        "end_reachable",
+        "updates",
+        "selected_node_ids",
+        "realization_mode",
+        "coverage",
+        "contains_unsupported_intent",
+        "summary",
+    }
+    return {key: _sanitize(item, full=False) for key, item in value.items() if key in allowed}

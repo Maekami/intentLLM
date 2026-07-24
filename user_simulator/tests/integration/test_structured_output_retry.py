@@ -55,9 +55,11 @@ async def test_controller_retries_semantically_invalid_output() -> None:
 class _FakeCompletions:
     def __init__(self) -> None:
         self.calls = 0
+        self.last_kwargs = {}
 
     async def create(self, **kwargs):
         self.calls += 1
+        self.last_kwargs = kwargs
         content = "" if self.calls == 1 else '{"decisions":[],"end_reachable":false,"summary":"ok"}'
         return SimpleNamespace(
             id=f"request-{self.calls}",
@@ -87,4 +89,6 @@ async def test_openrouter_client_retries_empty_structured_output() -> None:
     )
     assert result.summary == "ok"
     assert completions.calls == 2
-    assert client.last_call_metadata["retry_count"] == 1
+    assert completions.last_kwargs["max_tokens"] == 50
+    assert "max_completion_tokens" not in completions.last_kwargs
+    assert client.last_call_metadata["transport_retry_count"] == 1

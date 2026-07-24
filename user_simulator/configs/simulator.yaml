@@ -7,6 +7,12 @@ components:
   selection_policy: difficulty_selection_v1
   realization_policy: difficulty_realization_v1
 
+prompts:
+  controller: configs/prompts/controller_v2.yaml
+  satisfaction: configs/prompts/satisfaction_v2.yaml
+  realizer_clear: configs/prompts/user_clear_v2.yaml
+  realizer_abstract: configs/prompts/user_abstract_v2.yaml
+
 models:
   controller: deepseek_v4_pro
   satisfaction: deepseek_v4_pro
@@ -24,4 +30,3 @@ audit:
   enabled: true
   level: full
   output_dir: runs
-
