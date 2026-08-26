@@ -1,3 +1,4 @@
+from user_simulator.audit.logger import read_git_commit
 from user_simulator.controller.base import Controller
 from user_simulator.domain.dag import DagNode, Sample
 from user_simulator.domain.enums import RealizationMode, SatisfactionLevel
@@ -6,9 +7,9 @@ from user_simulator.domain.results import (
     CandidateExposureDecision,
     ControllerResult,
     NodeCoverageDecision,
-    NodeSatisfactionDecision,
     SatisfactionUpdateResult,
     UserGenerationResult,
+    make_node_satisfaction_decision,
 )
 from user_simulator.domain.state import EpisodeState
 from user_simulator.realizer.base import UserRealizer
@@ -29,7 +30,6 @@ class MockController(Controller):
         latest_assistant_response: str,
         state: EpisodeState,
         candidates: list[DagNode],
-        has_end_edge: bool,
     ) -> ControllerResult:
         return ControllerResult(
             decisions=[
@@ -40,13 +40,12 @@ class MockController(Controller):
                 )
                 for node in candidates
             ],
-            end_reachable=has_end_edge,
             summary="Deterministic mock exposure decision.",
         )
 
 
 class MockSatisfactionUpdater(SatisfactionUpdater):
-    """Keeps the active frontier unresolved until END is structurally available."""
+    """Keeps the active frontier unresolved until END has been exposed."""
 
     def __init__(self) -> None:
         self.last_call_metadata = _mock_metadata()
@@ -64,11 +63,11 @@ class MockSatisfactionUpdater(SatisfactionUpdater):
         for node in exposed_nodes:
             status = (
                 SatisfactionLevel.SATISFIED
-                if state.end_reachable or node.node_id != state.current_frontier
+                if state.end_exposed or node.node_id != state.current_frontier
                 else state.satisfaction[node.node_id]
             )
             updates.append(
-                NodeSatisfactionDecision(
+                make_node_satisfaction_decision(
                     node_id=node.node_id,
                     status=status,
                     reason=(
@@ -76,6 +75,7 @@ class MockSatisfactionUpdater(SatisfactionUpdater):
                         if status == SatisfactionLevel.SATISFIED
                         else "The active frontier still needs a later mock assistant contribution."
                     ),
+                    remaining_gap=None,
                 )
             )
         return SatisfactionUpdateResult(
@@ -96,6 +96,7 @@ class MockUserRealizer(UserRealizer):
         selected_nodes: list[DagNode],
         unselected_unresolved_nodes: list[DagNode],
         satisfaction: dict[str, SatisfactionLevel],
+        selected_remaining_gaps: dict[str, str],
         history: list[ChatMessage],
         latest_assistant_response: str | None,
         mode: RealizationMode,
@@ -104,6 +105,7 @@ class MockUserRealizer(UserRealizer):
         self.calls.append(
             {
                 "selected_node_ids": [node.node_id for node in selected_nodes],
+                "selected_remaining_gaps": dict(selected_remaining_gaps),
                 "mode": mode.value,
                 "initial": latest_assistant_response is None,
             }
@@ -127,7 +129,7 @@ class MockUserRealizer(UserRealizer):
             coverage=[
                 NodeCoverageDecision(node_id=node.node_id, covered=True) for node in selected_nodes
             ],
-            contains_unsupported_intent=False,
+            contains_unsupported_task_content=False,
             summary="Deterministic mock user realization.",
         )
 
@@ -136,6 +138,12 @@ def _mock_metadata() -> dict:
     return {
         "model_id": "deterministic-mock",
         "model_profile": "mock",
+        "git_commit": read_git_commit(),
+        "prompt_name": None,
+        "prompt_path": None,
+        "prompt_hash": None,
+        "schema_name": None,
+        "schema_hash": None,
         "structured_validation_status": "valid",
         "semantic_validation_status": "valid",
         "transport_retry_count": 0,

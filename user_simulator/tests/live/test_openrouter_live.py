@@ -25,7 +25,7 @@ pytestmark = [
         (
             ControllerResult,
             "controller_live",
-            'Return decisions=[], end_reachable=false, summary="ok".',
+            'Return decisions=[] and summary="ok".',
         ),
         (
             SatisfactionUpdateResult,
@@ -35,9 +35,9 @@ pytestmark = [
         (
             UserGenerationResult,
             "realizer_live",
-            """Return user_message="Hello", selected_node_ids=[],
-realization_mode="clear", coverage=[],
-contains_unsupported_intent=false, summary="ok".""",
+            """Return user_message="Hello", selected_node_ids=["N1"],
+realization_mode="clear", coverage=[{"node_id":"N1","covered":true}],
+contains_unsupported_task_content=false, summary="ok".""",
         ),
     ],
 )
@@ -58,3 +58,5 @@ async def test_strict_structured_output(schema, name, instruction) -> None:
     assert client.last_call_metadata["require_parameters"] is True
     assert "input_tokens" in client.last_call_metadata
     assert "output_tokens" in client.last_call_metadata
+    assert "thinking_tokens" in client.last_call_metadata
+    assert "answer_tokens" in client.last_call_metadata

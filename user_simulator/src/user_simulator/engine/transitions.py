@@ -18,7 +18,6 @@ _RANK = {
 def normalize_controller_result(
     raw: ControllerResult,
     candidates: list[str],
-    has_end_edge: bool,
 ) -> NormalizedControllerResult:
     received = [item.node_id for item in raw.decisions]
     if len(received) != len(set(received)):
@@ -43,19 +42,38 @@ def normalize_controller_result(
             newly_exposed.append(node_id)
         normalized.append(item.model_copy(update={"exposable": exposable}))
 
-    all_candidates_exposable = len(newly_exposed) == len(candidates)
-    end_reachable = raw.end_reachable and has_end_edge and all_candidates_exposable
-    if raw.end_reachable and not has_end_edge:
-        violations.append("forced END=false because no outgoing END edge exists")
-    elif raw.end_reachable and not all_candidates_exposable:
-        violations.append("forced END=false because candidate prefix is incomplete")
     return NormalizedControllerResult(
         decisions=normalized,
         newly_exposed=newly_exposed,
-        end_reachable=end_reachable,
         violations=violations,
         summary=raw.summary,
     )
+
+
+def derive_system_end_exposure(
+    *,
+    candidate_ids: list[str],
+    newly_exposed: list[str],
+    has_end_edge_before: bool,
+    outgoing_intents_after: list[str],
+    has_end_edge_after: bool,
+) -> str | None:
+    """Return the system rule that exposes END, or ``None``.
+
+    END can close the frontier only after the current ordered intent prefix is
+    complete. A single controller step may advance across several candidates to
+    a terminal-only frontier, so the post-transition graph state is checked in
+    the same turn.
+    """
+
+    prefix_complete = newly_exposed == candidate_ids
+    if not prefix_complete:
+        return None
+    if has_end_edge_before:
+        return "outgoing_end_after_complete_prefix"
+    if newly_exposed and has_end_edge_after and not outgoing_intents_after:
+        return "terminal_only_frontier_after_advance"
+    return None
 
 
 def apply_satisfaction_updates(

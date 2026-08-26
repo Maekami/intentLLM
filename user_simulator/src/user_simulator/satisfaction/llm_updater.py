@@ -1,5 +1,4 @@
 import json
-from typing import cast
 
 from user_simulator.config import GenerationSettings
 from user_simulator.domain.dag import DagNode
@@ -9,7 +8,6 @@ from user_simulator.domain.state import EpisodeState
 from user_simulator.exceptions import SatisfactionOutputError, StructuredOutputError
 from user_simulator.llm.base import StructuredLLMClient
 from user_simulator.llm.prompt import PromptTemplate
-from user_simulator.llm.schemas import SatisfactionUpdateResultV2
 from user_simulator.satisfaction.base import SatisfactionUpdater
 
 
@@ -19,14 +17,13 @@ class LLMSatisfactionUpdater(SatisfactionUpdater):
         client: StructuredLLMClient,
         generation: GenerationSettings,
         *,
-        prompt: PromptTemplate | None = None,
-        prompt_path: str = "configs/prompts/satisfaction_v2.yaml",
-        model_profile_name: str = "deepseek_v4_pro",
+        prompt: PromptTemplate,
+        model_profile_name: str = "deepseek_v4_flash_0731",
         semantic_attempts: int = 3,
     ) -> None:
         self.client = client
         self.generation = generation
-        self.prompt = prompt or PromptTemplate.load(prompt_path)
+        self.prompt = prompt
         self.model_profile_name = model_profile_name
         self.semantic_attempts = semantic_attempts
         self.semantic_events: list[dict] = []
@@ -39,22 +36,11 @@ class LLMSatisfactionUpdater(SatisfactionUpdater):
         state: EpisodeState,
         exposed_nodes: list[DagNode],
     ) -> SatisfactionUpdateResult:
-        context = _labeled_context(
-            [
-                (
-                    "VISIBLE CONVERSATION WITH ROLES",
-                    [item.model_dump() for item in history],
-                ),
-                ("LATEST ASSISTANT RESPONSE", latest_assistant_response),
-                (
-                    "EXPOSED NODE DETAILS IN REQUIRED ORDER",
-                    [item.model_dump() for item in exposed_nodes],
-                ),
-                (
-                    "PREVIOUS SATISFACTION STATES",
-                    {key: value.value for key, value in state.satisfaction.items()},
-                ),
-            ]
+        context = satisfaction_context(
+            history=history,
+            latest_assistant_response=latest_assistant_response,
+            state=state,
+            exposed_nodes=exposed_nodes,
         )
         expected = [item.node_id for item in exposed_nodes]
         self.semantic_events = []
@@ -72,16 +58,12 @@ class LLMSatisfactionUpdater(SatisfactionUpdater):
             )
             metadata["model_profile"] = self.model_profile_name
             try:
-                result = cast(
-                    SatisfactionUpdateResultV2,
-                    await self.client.generate_structured(
-                        messages=call_messages,
-                        response_model=self.prompt.schema.model,
-                        schema_name=self.prompt.schema.name,
-                        schema_version=self.prompt.schema.version,
-                        generation=self.generation,
-                        prompt_metadata={**metadata, "semantic_retry_count": attempt},
-                    ),
+                result = await self.client.generate_structured(
+                    messages=call_messages,
+                    response_model=SatisfactionUpdateResult,
+                    schema_name=self.prompt.schema.name,
+                    generation=self.generation,
+                    prompt_metadata={**metadata, "semantic_retry_count": attempt},
                 )
             except StructuredOutputError as exc:
                 raise SatisfactionOutputError(str(exc)) from exc
@@ -124,6 +106,32 @@ class LLMSatisfactionUpdater(SatisfactionUpdater):
             f"satisfaction semantic validation failed after {self.semantic_attempts} "
             f"attempts: {last_problem}"
         )
+
+
+def satisfaction_context(
+    *,
+    history: list[ChatMessage],
+    latest_assistant_response: str,
+    state: EpisodeState,
+    exposed_nodes: list[DagNode],
+) -> str:
+    return _labeled_context(
+        [
+            (
+                "VISIBLE CONVERSATION WITH ROLES",
+                [item.model_dump() for item in history],
+            ),
+            ("LATEST ASSISTANT RESPONSE", latest_assistant_response),
+            (
+                "EXPOSED NODE DETAILS IN REQUIRED ORDER",
+                [item.model_dump() for item in exposed_nodes],
+            ),
+            (
+                "PREVIOUS SATISFACTION STATES",
+                {key: value.value for key, value in state.satisfaction.items()},
+            ),
+        ]
+    )
 
 
 def _specific_reason(reason: str) -> bool:

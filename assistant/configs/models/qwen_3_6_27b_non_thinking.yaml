@@ -1,0 +1,46 @@
+# Official Hugging Face non-thinking profile for Qwen/Qwen3.6-27B.
+# For local deployment, change only:
+#   provider: openai_compatible
+#   model_id: Qwen/Qwen3.6-27B (or the served alias)
+#   base_url: http://localhost:8000/v1
+profile_name: qwen_3_6_27b_non_thinking
+provider: openrouter
+model_id: qwen/qwen3.6-27b
+base_url: https://openrouter.ai/api/v1
+
+routing:
+  # OPENROUTER ONLY: require support for all supplied sampling parameters.
+  require_parameters: true
+  allow_fallbacks: true
+
+reasoning:
+  # NON-THINKING PROFILE: do not use /nothink; Qwen3.6 does not support that
+  # soft switch. OpenRouter receives reasoning.enabled=false.
+  enabled: false
+  effort: null
+  exclude_from_response: true
+  # LOCAL vLLM/SGLang receives the exact Hugging Face chat-template switch when
+  # provider is changed to openai_compatible.
+  local_chat_template:
+    enable_thinking: false
+    preserve_thinking: false
+
+generation:
+  assistant:
+    # FIXED HF RECOMMENDATION: instruct/non-thinking mode.
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 1.5
+    repetition_penalty: 1.0
+    # FIXED HF RECOMMENDATION for most queries.
+    max_completion_tokens: 32768
+
+retry:
+  # ADJUSTABLE: integer >= 1; 1-5 is recommended. This is total attempts.
+  max_attempts: 3
+  # ADJUSTABLE: seconds >= 0; 0.1-10.0 is recommended.
+  initial_backoff_seconds: 1.0
+  # ADJUSTABLE: seconds >= initial_backoff_seconds; 1.0-60.0 is recommended.
+  maximum_backoff_seconds: 8.0

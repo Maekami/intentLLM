@@ -1,0 +1,52 @@
+# Profile identifiers are not tuning knobs. This profile pins the 0731 revision
+# instead of following a moving DeepSeek V4 Flash alias.
+profile_name: deepseek_v4_flash_0731
+provider: openrouter
+model_id: deepseek/deepseek-v4-flash-0731
+base_url: https://openrouter.ai/api/v1
+
+routing:
+  # ADJUSTABLE: true | false. True only selects endpoints that support every
+  # parameter sent by this client; keep true when changing generation options.
+  require_parameters: true
+  # ADJUSTABLE: true | false. True lets OpenRouter try a compatible fallback
+  # endpoint; false fails when the selected endpoint is unavailable.
+  allow_fallbacks: true
+
+reasoning:
+  # ADJUSTABLE: true | false. False disables reasoning; when false, `effort`
+  # and `exclude_from_response` are not sent.
+  enabled: false
+  # ADJUSTABLE WHEN ENABLED: max | high | low. OpenRouter currently reports
+  # high as the model default; max increases reasoning-token use and latency.
+  effort: high
+  # ADJUSTABLE WHEN ENABLED: true | false. True keeps reasoning tokens out of
+  # the visible answer while the model can still use and bill them.
+  exclude_from_response: true
+
+generation:
+  assistant:
+    # ADJUSTABLE: 0.0-2.0. 0.0-0.7 is recommended for stable assistant replies.
+    temperature: 1.0
+    # ADJUSTABLE: null or 0.0-1.0. null omits the parameter and uses the
+    # endpoint default; normally tune either temperature or top_p, not both.
+    top_p: null
+    # ADJUSTABLE: null or integer >= 0. null omits the OpenRouter extra field.
+    top_k: null
+    # ADJUSTABLE: null or 0.0-1.0. null omits the OpenRouter extra field.
+    min_p: null
+    # ADJUSTABLE: null or -2.0-2.0. null uses the endpoint default.
+    presence_penalty: null
+    # ADJUSTABLE: null or float > 0. null uses the endpoint default.
+    repetition_penalty: null
+    # ADJUSTABLE: positive integer up to the active endpoint's output limit.
+    # 512-8192 is recommended for conversational assistant answers.
+    max_completion_tokens: 8192
+
+retry:
+  # ADJUSTABLE: integer >= 1; 1-5 is recommended. This is total attempts.
+  max_attempts: 3
+  # ADJUSTABLE: seconds >= 0; 0.1-10.0 is recommended.
+  initial_backoff_seconds: 1.0
+  # ADJUSTABLE: seconds >= initial_backoff_seconds; 1.0-60.0 is recommended.
+  maximum_backoff_seconds: 8.0

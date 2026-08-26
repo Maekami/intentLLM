@@ -1,4 +1,5 @@
 import json
+import subprocess
 import uuid
 from pathlib import Path
 from typing import Any
@@ -29,11 +30,15 @@ class AuditLogger:
         self.run_id = run_id or uuid.uuid4().hex
         self.run_dir = Path(output_dir) / self.run_id
         self.events: list[AuditEvent] = []
+        self.git_commit = read_git_commit()
         if enabled:
             self.run_dir.mkdir(parents=True, exist_ok=False)
             with (self.run_dir / "config_snapshot.yaml").open("w", encoding="utf-8") as handle:
                 yaml.safe_dump(
-                    _sanitize(config_snapshot or {}, full=self.level == "full"),
+                    _sanitize(
+                        {**(config_snapshot or {}), "git_commit": self.git_commit},
+                        full=self.level == "full",
+                    ),
                     handle,
                     sort_keys=False,
                 )
@@ -82,9 +87,23 @@ def _sanitize(value: Any, *, full: bool) -> Any:
             lower = str(key).lower()
             if "api_key" in lower or lower == "authorization":
                 result[key] = "<redacted>"
-            elif not full and lower in {"rendered_prompt", "messages"}:
+            elif not full and lower in {
+                "messages",
+                "rendered_prompt",
+                "system",
+                "system_prompt",
+                "user_template",
+            }:
                 result[key] = "<hidden at summary audit level>"
-            elif not full and lower == "raw_response":
+            elif not full and lower in {
+                "node_intent",
+                "reason_text",
+                "surface_user_message",
+                "remaining_gap",
+                "selected_remaining_gaps",
+            }:
+                result[key] = "<hidden latent node text>"
+            elif not full and lower in {"raw_response", "invalid_raw_response"}:
                 result[key] = _summarize_raw_response(item)
             else:
                 result[key] = _sanitize(item, full=full)
@@ -99,14 +118,56 @@ def _sanitize(value: Any, *, full: bool) -> Any:
 def _summarize_raw_response(value: Any) -> Any:
     if not isinstance(value, dict):
         return "<hidden at summary audit level>"
-    allowed = {
-        "decisions",
-        "end_reachable",
-        "updates",
+    summarized: dict[str, Any] = {}
+    if isinstance(value.get("decisions"), list):
+        summarized["decisions"] = [
+            {
+                "node_id": item.get("node_id"),
+                "exposable": item.get("exposable"),
+            }
+            for item in value["decisions"]
+            if isinstance(item, dict)
+        ]
+    if "end_exposed" in value:
+        summarized["end_exposed"] = value["end_exposed"]
+    if isinstance(value.get("updates"), list):
+        summarized["updates"] = [
+            {
+                "node_id": item.get("node_id"),
+                "status": item.get("status"),
+            }
+            for item in value["updates"]
+            if isinstance(item, dict)
+        ]
+    for key in (
         "selected_node_ids",
         "realization_mode",
-        "coverage",
-        "contains_unsupported_intent",
-        "summary",
-    }
-    return {key: _sanitize(item, full=False) for key, item in value.items() if key in allowed}
+        "contains_unsupported_task_content",
+    ):
+        if key in value:
+            summarized[key] = value[key]
+    if isinstance(value.get("coverage"), list):
+        summarized["coverage"] = [
+            {
+                "node_id": item.get("node_id"),
+                "covered": item.get("covered"),
+            }
+            for item in value["coverage"]
+            if isinstance(item, dict)
+        ]
+    return _sanitize(summarized, full=False)
+
+
+def read_git_commit() -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+    commit = completed.stdout.strip()
+    return commit or None

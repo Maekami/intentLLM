@@ -1,0 +1,39 @@
+# Non-thinking profile for GPT-5.6 Luna through OpenRouter's
+# OpenAI-compatible Chat Completions endpoint.
+profile_name: gpt_5_6_luna_non_thinking
+provider: openrouter
+model_id: openai/gpt-5.6-luna
+base_url: https://openrouter.ai/api/v1
+
+routing:
+  # ADJUSTABLE: true | false. True only selects endpoints that support every
+  # parameter sent by this client; keep true when changing generation options.
+  require_parameters: true
+  # ADJUSTABLE: true | false. True lets OpenRouter try a compatible fallback
+  # endpoint; false fails when the selected endpoint is unavailable.
+  allow_fallbacks: true
+
+reasoning:
+  # NON-THINKING PROFILE: `enabled` is the application's local switch, while
+  # the explicit `none` value makes the OpenRouter request unambiguous:
+  # reasoning={"effort": "none"}.
+  enabled: false
+  effort: none
+  exclude_from_response: true
+
+generation:
+  assistant:
+    # FIXED FOR THIS PROFILE: keep null. OpenRouter currently does not list
+    # temperature as a supported GPT-5.6 Luna parameter, so the client omits it.
+    temperature: null
+    # ADJUSTABLE: integer 1-128000. 512-8192 is recommended for conversational
+    # answers; this profile keeps the thinking profile's output budget.
+    max_completion_tokens: 32768
+
+retry:
+  # ADJUSTABLE: integer >= 1; 1-5 is recommended. This is total attempts.
+  max_attempts: 3
+  # ADJUSTABLE: seconds >= 0; 0.1-10.0 is recommended.
+  initial_backoff_seconds: 1.0
+  # ADJUSTABLE: seconds >= initial_backoff_seconds; 1.0-60.0 is recommended.
+  maximum_backoff_seconds: 8.0

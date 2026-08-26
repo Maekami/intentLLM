@@ -12,6 +12,7 @@ from user_simulator.engine.termination import should_terminate
 from user_simulator.engine.transitions import (
     all_exposed_satisfied,
     apply_satisfaction_updates,
+    derive_system_end_exposure,
     normalize_controller_result,
     unresolved_queue,
 )
@@ -88,6 +89,7 @@ class Episode:
                 selected_nodes=[self.navigator.node("N1")],
                 unselected_unresolved_nodes=[],
                 satisfaction=self.state.satisfaction,
+                selected_remaining_gaps={},
                 history=[],
                 latest_assistant_response=None,
                 mode=mode,
@@ -140,58 +142,114 @@ class Episode:
         self.audit.log("assistant_message_received", turn, {"assistant_message": response})
         frontier_before = self.state.current_frontier
         try:
-            candidate_ids, has_end_edge = self.navigator.outgoing(frontier_before)
-            candidates = [self.navigator.node(item) for item in candidate_ids]
-            self.audit.log(
-                "controller_requested",
-                turn,
-                {
-                    "frontier": frontier_before,
-                    "candidates": candidate_ids,
-                    "has_end_edge": has_end_edge,
-                },
-            )
-            raw_controller = await self.controller.decide(
-                history=self.state.conversation_history,
-                latest_assistant_response=response,
-                state=self.state,
-                candidates=candidates,
-                has_end_edge=has_end_edge,
-            )
-            normalized = normalize_controller_result(raw_controller, candidate_ids, has_end_edge)
-            controller_metadata = self._llm_metadata(self.controller, "controller")
-            controller_metadata["normalization_violations"] = normalized.violations
-            self.audit.log(
-                "controller_raw_result",
-                turn,
-                {
-                    "raw_response": raw_controller.model_dump(mode="json"),
-                    "llm_call": controller_metadata,
-                },
-            )
-            self.audit.log(
-                "controller_prefix_normalized",
-                turn,
-                normalized.model_dump(mode="json"),
-            )
+            if not self.state.end_exposed:
+                candidate_ids, has_end_edge_before = self.navigator.outgoing(frontier_before)
+                newly_exposed: list[str] = []
+                if candidate_ids:
+                    candidates = [self.navigator.node(item) for item in candidate_ids]
+                    self.audit.log(
+                        "controller_requested",
+                        turn,
+                        {
+                            "frontier": frontier_before,
+                            "candidates": candidate_ids,
+                        },
+                    )
+                    raw_controller = await self.controller.decide(
+                        history=self.state.conversation_history,
+                        latest_assistant_response=response,
+                        state=self.state,
+                        candidates=candidates,
+                    )
+                    normalized = normalize_controller_result(raw_controller, candidate_ids)
+                    newly_exposed = normalized.newly_exposed
+                    controller_metadata = self._llm_metadata(self.controller, "controller")
+                    controller_metadata["normalization_violations"] = normalized.violations
+                    self.audit.log(
+                        "controller_raw_result",
+                        turn,
+                        {
+                            "raw_response": raw_controller.model_dump(mode="json"),
+                            "llm_call": controller_metadata,
+                        },
+                    )
+                    self.audit.log(
+                        "controller_prefix_normalized",
+                        turn,
+                        normalized.model_dump(mode="json"),
+                    )
+                else:
+                    self.audit.log(
+                        "controller_skipped",
+                        turn,
+                        {
+                            "reason": "No outgoing intent candidates",
+                            "frontier": frontier_before,
+                        },
+                    )
 
-            for node_id in normalized.newly_exposed:
-                if node_id not in self.state.exposed_nodes:
-                    self.state.exposed_nodes.append(node_id)
-                    self.state.satisfaction[node_id] = SatisfactionLevel.UNSATISFIED
-            if normalized.newly_exposed:
-                self.state.current_frontier = normalized.newly_exposed[-1]
-            self.state.end_reachable = normalized.end_reachable
-            self.audit.log(
-                "nodes_exposed",
-                turn,
-                {
-                    "newly_exposed": normalized.newly_exposed,
-                    "frontier_before": frontier_before,
-                    "frontier_after": self.state.current_frontier,
-                    "end_reachable": self.state.end_reachable,
-                },
-            )
+                for node_id in newly_exposed:
+                    if node_id not in self.state.exposed_nodes:
+                        self.state.exposed_nodes.append(node_id)
+                        self.state.satisfaction[node_id] = SatisfactionLevel.UNSATISFIED
+                if newly_exposed:
+                    self.state.current_frontier = newly_exposed[-1]
+
+                outgoing_intents_after, has_end_edge_after = self.navigator.outgoing(
+                    self.state.current_frontier
+                )
+                end_exposure_rule = derive_system_end_exposure(
+                    candidate_ids=candidate_ids,
+                    newly_exposed=newly_exposed,
+                    has_end_edge_before=has_end_edge_before,
+                    outgoing_intents_after=outgoing_intents_after,
+                    has_end_edge_after=has_end_edge_after,
+                )
+                self.audit.log(
+                    "system_end_closure_checked",
+                    turn,
+                    {
+                        "frontier_before": frontier_before,
+                        "frontier_after": self.state.current_frontier,
+                        "candidate_ids": candidate_ids,
+                        "newly_exposed": newly_exposed,
+                        "candidate_prefix_complete": newly_exposed == candidate_ids,
+                        "has_end_edge_before": has_end_edge_before,
+                        "outgoing_intents_after": outgoing_intents_after,
+                        "has_end_edge_after": has_end_edge_after,
+                        "end_exposure_rule": end_exposure_rule,
+                    },
+                )
+                if end_exposure_rule is not None:
+                    self.state.end_exposed = True
+                    self.audit.log(
+                        "end_exposed",
+                        turn,
+                        {
+                            "frontier": self.state.current_frontier,
+                            "source": "system_graph_closure",
+                            "rule": end_exposure_rule,
+                        },
+                    )
+                self.audit.log(
+                    "nodes_exposed",
+                    turn,
+                    {
+                        "newly_exposed": newly_exposed,
+                        "frontier_before": frontier_before,
+                        "frontier_after": self.state.current_frontier,
+                        "end_exposed": self.state.end_exposed,
+                    },
+                )
+            else:
+                self.audit.log(
+                    "controller_skipped",
+                    turn,
+                    {
+                        "reason": "END was exposed on an earlier turn",
+                        "frontier": self.state.current_frontier,
+                    },
+                )
 
             self.audit.log(
                 "satisfaction_requested",
@@ -237,13 +295,19 @@ class Episode:
                 },
             )
 
+            remaining_gaps = {
+                item.node_id: item.remaining_gap
+                for item in raw_satisfaction.updates
+                if item.remaining_gap is not None
+            }
+
             all_satisfied = all_exposed_satisfied(self.state.exposed_nodes, self.state.satisfaction)
             terminating = should_terminate(self.state)
             self.audit.log(
                 "termination_checked",
                 turn,
                 {
-                    "end_reachable": self.state.end_reachable,
+                    "end_exposed": self.state.end_exposed,
                     "all_exposed_satisfied": all_satisfied,
                     "will_terminate": terminating,
                 },
@@ -260,15 +324,15 @@ class Episode:
                     terminal=True, state=self.state.model_copy(deep=True), audit=self._turn_audit()
                 )
 
-            if not self.state.end_reachable and all_satisfied:
+            if not self.state.end_exposed and all_satisfied:
                 if not self.auto_expose_backbone_on_empty_queue:
                     raise InvalidTerminalStateError(
-                        "all exposed nodes satisfied while END is unreachable"
+                        "all exposed nodes satisfied before END is exposed"
                     )
                 next_node = self.navigator.next_backbone(self.state.current_frontier)
                 if next_node is None:
                     raise InvalidTerminalStateError(
-                        "final intent node is satisfied but END is not reachable"
+                        "final intent node is satisfied but END has not been exposed"
                     )
                 self.state.exposed_nodes.append(next_node)
                 self.state.satisfaction[next_node] = SatisfactionLevel.UNSATISFIED
@@ -293,12 +357,18 @@ class Episode:
             mode = self.realization_policy.choose_mode(self.state.difficulty, self.rng)
             self.audit.log("realization_mode_selected", turn, {"mode": mode.value})
             unselected = [item for item in queue if item not in selected_ids]
+            selected_remaining_gaps = {
+                node_id: remaining_gaps[node_id]
+                for node_id in selected_ids
+                if node_id in remaining_gaps
+            }
             self.audit.log(
                 "user_generation_requested",
                 turn,
                 {
                     "selected_nodes": selected_ids,
                     "unselected_unresolved_nodes": unselected,
+                    "selected_remaining_gaps": selected_remaining_gaps,
                     "mode": mode.value,
                 },
             )
@@ -306,6 +376,7 @@ class Episode:
                 selected_nodes=[self.navigator.node(item) for item in selected_ids],
                 unselected_unresolved_nodes=[self.navigator.node(item) for item in unselected],
                 satisfaction=self.state.satisfaction,
+                selected_remaining_gaps=selected_remaining_gaps,
                 history=self.state.conversation_history,
                 latest_assistant_response=response,
                 mode=mode,
@@ -345,8 +416,7 @@ class Episode:
             "events": [event.model_dump(mode="json") for event in self.audit.latest_turn_events]
         }
 
-    @staticmethod
-    def _llm_metadata(component: Any, component_name: str) -> dict[str, Any]:
+    def _llm_metadata(self, component: Any, component_name: str) -> dict[str, Any]:
         direct = getattr(component, "last_call_metadata", None)
         if isinstance(direct, dict) and direct:
             metadata = dict(direct)
@@ -356,6 +426,7 @@ class Episode:
             metadata = dict(client_metadata) if isinstance(client_metadata, dict) else {}
         semantic_events = getattr(component, "semantic_events", [])
         metadata["component"] = component_name
+        metadata.setdefault("git_commit", self.audit.git_commit)
         metadata.setdefault("normalization_violations", [])
         metadata["semantic_events"] = semantic_events
         if semantic_events:
@@ -365,7 +436,12 @@ class Episode:
             )
         else:
             metadata.setdefault("semantic_retry_count", 0)
-            metadata.setdefault("semantic_validation_status", "valid")
+            default_status = (
+                "not_run"
+                if metadata.get("structured_validation_status") != "valid"
+                else "valid"
+            )
+            metadata.setdefault("semantic_validation_status", default_status)
         return metadata
 
     def _fail(self, exc: Exception) -> None:

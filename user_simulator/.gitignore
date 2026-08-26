@@ -6,6 +6,6 @@ __pycache__/
 .ruff_cache/
 dist/
 build/
-runs/*
 !runs/.gitkeep
-
+runs
+dataset/thoughttrace_3plus_no_dag

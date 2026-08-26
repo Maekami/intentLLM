@@ -12,6 +12,18 @@ class NodeSelectionPolicy(Protocol):
 
 
 class DifficultySelectionPolicy:
+    def __init__(
+        self,
+        medium_min_nodes: int = 1,
+        medium_max_nodes: int | None = None,
+    ) -> None:
+        if medium_min_nodes < 1:
+            raise ValueError("medium_min_nodes must be at least 1")
+        if medium_max_nodes is not None and medium_max_nodes < medium_min_nodes:
+            raise ValueError("medium_max_nodes must be greater than or equal to medium_min_nodes")
+        self.medium_min_nodes = medium_min_nodes
+        self.medium_max_nodes = medium_max_nodes
+
     def select(
         self, unresolved_queue: list[str], difficulty: Difficulty, rng: random.Random
     ) -> SelectionResult:
@@ -20,7 +32,10 @@ class DifficultySelectionPolicy:
         if difficulty == Difficulty.EASY:
             selected = list(unresolved_queue)
         elif difficulty == Difficulty.MEDIUM:
-            selected = unresolved_queue[: rng.randint(1, len(unresolved_queue))]
+            available = len(unresolved_queue)
+            minimum = min(self.medium_min_nodes, available)
+            maximum = min(self.medium_max_nodes or available, available)
+            selected = unresolved_queue[: rng.randint(minimum, maximum)]
         else:
             selected = unresolved_queue[:1]
         return SelectionResult(unresolved_queue=list(unresolved_queue), selected_nodes=selected)

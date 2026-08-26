@@ -8,6 +8,7 @@ from user_simulator.domain.results import ControllerResult
 from user_simulator.domain.state import EpisodeState
 from user_simulator.llm.mock import MockStructuredLLMClient
 from user_simulator.llm.openrouter_client import OpenRouterStructuredClient
+from user_simulator.llm.prompt import PromptTemplate
 
 
 async def test_controller_retries_semantically_invalid_output() -> None:
@@ -15,7 +16,6 @@ async def test_controller_retries_semantically_invalid_output() -> None:
         [
             {
                 "decisions": [{"node_id": "N2", "exposable": True, "reason": "missing N3"}],
-                "end_reachable": False,
                 "summary": "invalid",
             },
             {
@@ -23,12 +23,15 @@ async def test_controller_retries_semantically_invalid_output() -> None:
                     {"node_id": "N2", "exposable": True, "reason": "supported"},
                     {"node_id": "N3", "exposable": False, "reason": "not supported"},
                 ],
-                "end_reachable": False,
                 "summary": "valid",
             },
         ]
     )
-    controller = LLMController(client, GenerationSettings(temperature=0, max_completion_tokens=100))
+    controller = LLMController(
+        client,
+        GenerationSettings(temperature=0, max_completion_tokens=100),
+        prompt=PromptTemplate.load("configs/prompts/controller.yaml"),
+    )
     state = EpisodeState(
         sample_id="x",
         difficulty=Difficulty.EASY,
@@ -45,7 +48,6 @@ async def test_controller_retries_semantically_invalid_output() -> None:
             DagNode(node_id="N2", node_type="intent", node_intent="two"),
             DagNode(node_id="N3", node_type="intent", node_intent="three"),
         ],
-        has_end_edge=False,
     )
     assert [item.node_id for item in result.decisions] == ["N2", "N3"]
     assert len(client.calls) == 2
@@ -60,7 +62,7 @@ class _FakeCompletions:
     async def create(self, **kwargs):
         self.calls += 1
         self.last_kwargs = kwargs
-        content = "" if self.calls == 1 else '{"decisions":[],"end_reachable":false,"summary":"ok"}'
+        content = "" if self.calls == 1 else '{"decisions":[],"summary":"ok"}'
         return SimpleNamespace(
             id=f"request-{self.calls}",
             choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
@@ -91,4 +93,6 @@ async def test_openrouter_client_retries_empty_structured_output() -> None:
     assert completions.calls == 2
     assert completions.last_kwargs["max_tokens"] == 50
     assert "max_completion_tokens" not in completions.last_kwargs
-    assert client.last_call_metadata["transport_retry_count"] == 1
+    assert client.last_call_metadata["transport_retry_count"] == 0
+    assert client.last_call_metadata["structured_retry_count"] == 1
+    assert "STRUCTURED OUTPUT CORRECTION" in completions.last_kwargs["messages"][-1]["content"]

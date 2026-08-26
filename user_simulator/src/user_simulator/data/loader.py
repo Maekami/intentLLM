@@ -13,11 +13,9 @@ class DatasetLoader:
     def __init__(
         self,
         path: str | Path = "dataset/DAG.jsonl",
-        *,
-        strict_prefix_closure: bool = False,
     ) -> None:
         self.path = Path(path)
-        self.validator = DatasetValidator(strict_prefix_closure=strict_prefix_closure)
+        self.validator = DatasetValidator()
         self._cache: list[Sample] | None = None
 
     def load_all_samples(self) -> list[Sample]:

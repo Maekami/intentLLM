@@ -4,6 +4,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
+from user_simulator.audit.logger import read_git_commit
 from user_simulator.config import GenerationSettings
 from user_simulator.exceptions import StructuredOutputError
 from user_simulator.llm.schema_utils import schema_hash
@@ -25,7 +26,6 @@ class MockStructuredLLMClient:
         messages: list[dict[str, str]],
         response_model: type[T],
         schema_name: str,
-        schema_version: int = 2,
         generation: GenerationSettings,
         prompt_metadata: dict[str, Any] | None = None,
     ) -> T:
@@ -34,7 +34,6 @@ class MockStructuredLLMClient:
                 "messages": messages,
                 "response_model": response_model.__name__,
                 "schema_name": schema_name,
-                "schema_version": schema_version,
                 "generation": generation.model_dump(),
                 "prompt_metadata": prompt_metadata or {},
             }
@@ -42,10 +41,10 @@ class MockStructuredLLMClient:
         self.last_call_metadata = {
             **(prompt_metadata or {}),
             "schema_name": schema_name,
-            "schema_version": schema_version,
             "schema_hash": schema_hash(response_model),
             "model_id": "mock",
             "model_profile": "mock",
+            "git_commit": read_git_commit(),
             "transport_retry_count": 0,
             "structured_validation_status": "valid",
             "messages": messages,

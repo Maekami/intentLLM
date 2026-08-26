@@ -1,0 +1,20 @@
+components:
+  assistant: llm_assistant
+  # Available baselines: base | prompt_base
+  baseline: base
+
+prompts:
+  prompt_base: configs/prompts/prompt_base.yaml
+
+models:
+  # Available additional profiles include deepseek_v4_flash_0731/gpt_5_6_luna.
+  # Qwen's only two supported experiment profiles are:
+  # - qwen_3_6_27b: thinking enabled
+  # - qwen_3_6_27b_non_thinking: thinking disabled
+  # Evo-Memory OpenRouter examples (memory is still configured inside profile):
+  # - qwen_3_6_27b_exprag
+  # - qwen_3_6_27b_remem
+  # Local vLLM equivalents for the documented 127.0.0.1:8001 service:
+  # - qwen_3_6_27b_vllm: thinking enabled
+  # - qwen_3_6_27b_vllm_non_thinking: thinking disabled
+  assistant: qwen_3_6_27b

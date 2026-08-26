@@ -1,0 +1,102 @@
+# Local vLLM profile for the official Qwen/Qwen3.8-27B checkpoint.
+# The default service endpoint is http://127.0.0.1:8005/v1.
+profile_name: qwen_3_8_27b_vllm
+provider: vllm
+# This matches vLLM's default served name when --served-model-name is omitted.
+model_id: Qwen/Qwen3.8-27B
+base_url: http://127.0.0.1:8005/v1
+
+# OpenRouter-only routing options are intentionally empty for local vLLM.
+routing: {}
+
+reasoning:
+  # BACKWARD-COMPATIBLE FALLBACK for calls without component-level reasoning.
+  enabled: true
+  # Qwen3.8's official chat template supports xhigh (default), medium, and low.
+  effort: low
+  # vLLM's qwen3 parser returns reasoning separately from visible JSON content.
+  exclude_from_response: false
+  local_chat_template:
+    enable_thinking: true
+    preserve_thinking: false
+    reasoning_effort: low
+
+generation:
+  controller:
+    # Official Qwen3.8 generation defaults from generation_config.json.
+    temperature: 1.0
+    top_p: 0.95
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 0.0
+    repetition_penalty: 1.0
+    max_completion_tokens: 16384
+    reasoning:
+      enabled: true
+      effort: medium
+      exclude_from_response: false
+      local_chat_template:
+        enable_thinking: true
+        preserve_thinking: false
+        reasoning_effort: medium
+  satisfaction:
+    temperature: 1.0
+    top_p: 0.95
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 0.0
+    repetition_penalty: 1.0
+    max_completion_tokens: 16384
+    reasoning:
+      enabled: true
+      effort: medium
+      exclude_from_response: false
+      local_chat_template:
+        enable_thinking: true
+        preserve_thinking: false
+        reasoning_effort: medium
+  realizer_clear:
+    temperature: 1.0
+    top_p: 0.95
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 0.0
+    repetition_penalty: 1.0
+    max_completion_tokens: 16384
+    reasoning:
+      enabled: true
+      effort: medium
+      exclude_from_response: false
+      local_chat_template:
+        enable_thinking: true
+        preserve_thinking: false
+        reasoning_effort: medium
+  realizer_abstract:
+    temperature: 1.0
+    top_p: 0.95
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 0.0
+    repetition_penalty: 1.0
+    max_completion_tokens: 16384
+    reasoning:
+      enabled: true
+      effort: medium
+      exclude_from_response: false
+      local_chat_template:
+        enable_thinking: true
+        preserve_thinking: false
+        reasoning_effort: medium
+
+structured_output:
+  # vLLM receives the same strict Pydantic-derived JSON Schema as OpenRouter.
+  type: json_schema
+  strict: true
+  require_parameters: true
+  # response-healing is an OpenRouter plugin and must remain disabled locally.
+  response_healing: false
+
+retry:
+  max_attempts: 4
+  initial_backoff_seconds: 1.0
+  maximum_backoff_seconds: 8.0

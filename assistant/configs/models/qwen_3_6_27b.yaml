@@ -1,0 +1,52 @@
+# Profile identifiers are not tuning knobs. This profile calls Qwen3.6 27B
+# through OpenRouter's OpenAI-compatible Chat Completions endpoint.
+profile_name: qwen_3_6_27b
+provider: openrouter
+model_id: qwen/qwen3.6-27b
+base_url: https://openrouter.ai/api/v1
+
+routing:
+  # ADJUSTABLE: true | false. True only selects endpoints that support every
+  # parameter sent by this client; keep true when changing generation options.
+  require_parameters: true
+  # ADJUSTABLE: true | false. True lets OpenRouter try a compatible fallback
+  # endpoint; false fails when the selected endpoint is unavailable.
+  allow_fallbacks: true
+
+reasoning:
+  # THINKING PROFILE: use qwen_3_6_27b_non_thinking for the only other tested
+  # condition. Qwen explicitly does not support /think or /nothink soft switches.
+  enabled: true
+  # FIXED FOR HF PARITY: Qwen's model card defines thinking as on/off rather than
+  # a discrete effort. null avoids imposing an OpenRouter-only effort mapping.
+  effort: null
+  # FIXED FOR MULTI-TURN PARITY: false lets the client retain returned reasoning
+  # fields internally. They are not included in AssistantSession.respond().
+  exclude_from_response: false
+  # USED WHEN provider is changed from openrouter to openai_compatible for a
+  # local vLLM/SGLang server. These are the exact Hugging Face chat-template
+  # switches for thinking mode and multi-turn thinking preservation.
+  local_chat_template:
+    enable_thinking: true
+    preserve_thinking: true
+
+generation:
+  assistant:
+    # FIXED HF RECOMMENDATION: thinking mode for general tasks.
+    temperature: 1.0
+    top_p: 0.95
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 0.0
+    repetition_penalty: 1.0
+    # FIXED HF RECOMMENDATION: Qwen recommends 32768 output tokens for most
+    # queries so thinking does not consume the entire visible-answer budget.
+    max_completion_tokens: 32768
+
+retry:
+  # ADJUSTABLE: integer >= 1; 1-5 is recommended. This is total attempts.
+  max_attempts: 3
+  # ADJUSTABLE: seconds >= 0; 0.1-10.0 is recommended.
+  initial_backoff_seconds: 1.0
+  # ADJUSTABLE: seconds >= initial_backoff_seconds; 1.0-60.0 is recommended.
+  maximum_backoff_seconds: 8.0

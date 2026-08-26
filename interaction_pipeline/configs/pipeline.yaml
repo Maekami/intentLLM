@@ -1,0 +1,16 @@
+projects:
+  # Paths are resolved relative to the interaction_pipeline directory.
+  simulator_root: ../user_simulator
+  assistant_root: ../assistant
+  # null loads each project's standard configs/simulator.yaml or assistant.yaml.
+  simulator_config: null
+  assistant_config: null
+
+run:
+  difficulty: hard
+  seed: 42
+  concurrency: 4
+  # Additional full-sample attempts after the initial attempt. 0 disables retries.
+  sample_retries: 3
+  output_dir: runs_batch_qwen
+  audit_level: full

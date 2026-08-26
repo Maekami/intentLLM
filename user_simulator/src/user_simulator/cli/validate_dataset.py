@@ -19,7 +19,7 @@ def main(
     strict: bool = typer.Option(
         False,
         "--strict",
-        help="Treat outgoing-target prefix-closure violations as errors.",
+        help="Treat every validation warning as an error.",
     ),
     show_warnings: bool = typer.Option(
         False, "--show-warnings", help="Print non-fatal validation warnings."
@@ -27,8 +27,11 @@ def main(
 ) -> None:
     try:
         samples = DatasetLoader(dataset).load_all_samples()
-        report = DatasetValidator(strict_prefix_closure=strict).validate_samples(samples)
+        report = DatasetValidator().validate_samples(samples)
         report.raise_for_errors()
+        if strict and report.warnings:
+            detail = "\n".join(f"{issue.sample_id}: {issue.message}" for issue in report.warnings)
+            raise DatasetValidationError(detail)
     except DatasetValidationError as exc:
         console.print(f"[red]Dataset validation failed:[/red]\n{exc}")
         raise typer.Exit(1) from exc

@@ -38,5 +38,9 @@ class EpisodeTurnLimitError(SimulatorError):
     pass
 
 
-class OpenRouterRequestError(SimulatorError):
+class ModelRequestError(SimulatorError):
+    pass
+
+
+class OpenRouterRequestError(ModelRequestError):
     pass

@@ -1,0 +1,35 @@
+# AITR judge model configuration. Secrets and request-identifying headers stay
+# in environment variables and must not be added to this file.
+profile_name: aitr_judge
+provider: openrouter
+model_id: openai/gpt-5.6-luna
+base_url: https://openrouter.ai/api/v1
+prompt: configs/prompts/aitr.yaml
+
+routing:
+  # Require an endpoint that supports strict JSON Schema and reasoning options.
+  require_parameters: true
+  # Permit OpenRouter to try another compatible provider endpoint.
+  allow_fallbacks: true
+
+reasoning:
+  enabled: true
+  effort: high
+  # Reasoning remains hidden from the cached/evaluated natural response.
+  exclude_from_response: true
+
+generation:
+  aitr:
+    # GPT-5.6 Luna does not advertise temperature support through OpenRouter.
+    temperature: null
+    max_completion_tokens: 4096
+
+structured_output:
+  type: json_schema
+  strict: true
+  require_parameters: true
+
+retry:
+  max_attempts: 3
+  initial_backoff_seconds: 1.0
+  maximum_backoff_seconds: 8.0

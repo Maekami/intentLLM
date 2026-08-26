@@ -39,28 +39,25 @@ def test_missing_backbone_is_error() -> None:
     assert any("backbone" in issue.message for issue in report.errors)
 
 
-def test_prefix_violation_can_warn_or_error() -> None:
+def test_nonconsecutive_outgoing_candidates_are_valid() -> None:
     sample = _sample()
     sample.reason_dag.nodes.insert(
         2, sample.reason_dag.nodes[1].model_copy(update={"node_id": "N3"})
     )
+    sample.reason_dag.nodes.insert(
+        3, sample.reason_dag.nodes[1].model_copy(update={"node_id": "N4"})
+    )
     sample.reason_dag.edges = [
         sample.reason_dag.edges[0],
         DagEdge(edge_id="E2", source="N2", target="N3"),
-        DagEdge(edge_id="E3", source="N3", target="END"),
-        DagEdge(edge_id="E4", source="N1", target="N3"),
+        DagEdge(edge_id="E3", source="N3", target="N4"),
+        DagEdge(edge_id="E4", source="N4", target="END"),
+        DagEdge(edge_id="E5", source="N1", target="N4"),
     ]
     sample = Sample.model_validate(sample.model_dump())
-    # N1 has both N2 and N3, so create a genuine missing prefix from N1.
-    sample.reason_dag.edges = [
-        edge
-        for edge in sample.reason_dag.edges
-        if not (edge.source == "N1" and edge.target == "N2")
-    ]
-    warning_report = DatasetValidator().validate_sample(sample)
-    strict_report = DatasetValidator(strict_prefix_closure=True).validate_sample(sample)
-    assert warning_report.warnings
-    assert strict_report.errors
+    report = DatasetValidator().validate_sample(sample)
+    assert not report.errors
+    assert not report.warnings
 
 
 def test_loader_reports_bad_json(tmp_path) -> None:

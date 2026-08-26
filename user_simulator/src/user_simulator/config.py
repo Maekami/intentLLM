@@ -1,15 +1,10 @@
 import os
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-
-class GenerationSettings(BaseModel):
-    temperature: float
-    max_completion_tokens: int
 
 
 class RetrySettings(BaseModel):
@@ -18,23 +13,68 @@ class RetrySettings(BaseModel):
     maximum_backoff_seconds: float = 8.0
 
 
+class LocalChatTemplateSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enable_thinking: bool
+    preserve_thinking: bool = False
+    reasoning_effort: str | None = Field(default=None, min_length=1)
+
+
+class ReasoningSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    effort: str | None = Field(default="high", min_length=1)
+    exclude_from_response: bool = True
+    local_chat_template: LocalChatTemplateSettings | None = None
+
+    @model_validator(mode="after")
+    def validate_local_thinking_switch(self) -> Self:
+        local = self.local_chat_template
+        if local is not None and local.enable_thinking != self.enabled:
+            raise ValueError("reasoning.enabled and local_chat_template.enable_thinking must match")
+        if (
+            local is not None
+            and local.reasoning_effort is not None
+            and self.effort is not None
+            and local.reasoning_effort != self.effort
+        ):
+            raise ValueError(
+                "reasoning.effort and local_chat_template.reasoning_effort must match"
+            )
+        return self
+
+
+class GenerationSettings(BaseModel):
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    top_k: int | None = Field(default=None, ge=0)
+    min_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    repetition_penalty: float | None = Field(default=None, gt=0.0)
+    max_completion_tokens: int = Field(ge=1)
+    reasoning: ReasoningSettings | None = None
+
+
 class StructuredOutputSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["json_schema"] = "json_schema"
     strict: Literal[True] = True
     require_parameters: Literal[True] = True
+    response_healing: bool = False
 
 
 class ModelProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     profile_name: str
-    provider: str
+    provider: Literal["openrouter", "vllm", "openai_compatible"]
     model_id: str
     base_url: str
-    routing: dict[str, bool]
-    reasoning: dict[str, Any]
+    routing: dict[str, bool] = Field(default_factory=dict)
+    reasoning: ReasoningSettings
     generation: dict[str, GenerationSettings]
     structured_output: StructuredOutputSettings
     retry: RetrySettings
@@ -42,10 +82,18 @@ class ModelProfile(BaseModel):
 
 class PolicySettings(BaseModel):
     medium_clear_probability: float = Field(default=0.5, ge=0.0, le=1.0)
+    medium_min_nodes: int = Field(default=1, ge=1)
+    medium_max_nodes: int | None = Field(default=None, ge=1)
     monotonic_satisfaction: bool = True
     auto_expose_backbone_on_empty_queue: bool = True
     enforce_controller_prefix_closure: bool = True
     max_turns: int = Field(default=20, ge=1)
+
+    @model_validator(mode="after")
+    def validate_medium_node_bounds(self) -> Self:
+        if self.medium_max_nodes is not None and self.medium_max_nodes < self.medium_min_nodes:
+            raise ValueError("medium_max_nodes must be greater than or equal to medium_min_nodes")
+        return self
 
 
 class AuditSettings(BaseModel):
@@ -59,8 +107,8 @@ class ComponentSettings(BaseModel):
 
     controller: str = "llm_controller"
     satisfaction_updater: str = "llm_satisfaction_updater"
-    selection_policy: str = "difficulty_selection_v1"
-    realization_policy: str = "difficulty_realization_v1"
+    selection_policy: str = "difficulty_selection"
+    realization_policy: str = "difficulty_realization"
     user_realizer: str = "llm_user_realizer"
 
 
@@ -90,6 +138,9 @@ class EnvironmentSettings(BaseSettings):
     openrouter_api_key: str = ""
     openrouter_http_referer: str = ""
     openrouter_app_title: str = "Reason-DAG User Simulator"
+    # vLLM requires a non-empty SDK key even when its local server does not
+    # enforce authentication. Override VLLM_API_KEY when the server uses one.
+    vllm_api_key: str = "EMPTY"
 
 
 def _read_yaml(path: str | Path) -> dict[str, Any]:
@@ -131,7 +182,7 @@ def load_config(
 
 
 def load_model_profile(
-    name_or_path: str = "deepseek_v4_pro",
+    name_or_path: str = "deepseek_v4_flash_0731",
     *,
     overrides: dict[str, Any] | None = None,
 ) -> ModelProfile:

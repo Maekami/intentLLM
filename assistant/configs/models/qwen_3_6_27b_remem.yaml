@@ -1,0 +1,66 @@
+# Qwen3.6-27B thinking profile with the Evo-Memory ReMem framework enabled.
+profile_name: qwen_3_6_27b_remem
+provider: openrouter
+model_id: qwen/qwen3.6-27b
+base_url: https://openrouter.ai/api/v1
+
+routing:
+  require_parameters: true
+  allow_fallbacks: true
+
+reasoning:
+  # Keep these values aligned with qwen_3_6_27b.yaml.
+  enabled: true
+  effort: null
+  exclude_from_response: false
+  local_chat_template:
+    enable_thinking: true
+    preserve_thinking: true
+
+generation:
+  assistant:
+    temperature: 1.0
+    top_p: 0.95
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 0.0
+    repetition_penalty: 1.0
+    max_completion_tokens: 32768
+
+retry:
+  max_attempts: 3
+  initial_backoff_seconds: 1.0
+  maximum_backoff_seconds: 8.0
+
+memory:
+  # FIXED FOR THIS PROFILE: remem. Set the entire memory field to null to
+  # recover the original memory-free model behavior.
+  framework: remem
+  # ADJUSTABLE: relative paths are resolved from this YAML file. Use a distinct
+  # file per experiment stream to avoid carrying experience across conditions.
+  path: ../../runs/memory/qwen_3_6_27b_remem.json
+  max_entries: 1000
+  prune_oldest_when_full: true
+  # ADJUSTABLE: true matches the official agent default.
+  store_successful_only: true
+  retrieval:
+    # ADJUSTABLE: bm25 | sentence_transformers. See the ExpRAG profile for the
+    # dependency/fidelity trade-off.
+    backend: bm25
+    top_k: 4
+    min_score: 0.0
+    embedding_model: BAAI/bge-base-en-v1.5
+    device: null
+    bm25_k1: 1.5
+    bm25_b: 0.75
+  context:
+    include_trajectory: true
+    include_feedback: true
+    max_characters: 8000
+  remem:
+    # ADJUSTABLE: 1-100; the reference default is 10. Each iteration can issue
+    # one model call, so this directly bounds latency and token cost per reply.
+    max_iterations: 10
+    # ADJUSTABLE: true allows model-issued Think-Prune operations to remove
+    # items from this episode's retrieved working set (not the persistent file).
+    enable_pruning: true

@@ -13,6 +13,7 @@ class UserRealizer(Protocol):
         selected_nodes: list[DagNode],
         unselected_unresolved_nodes: list[DagNode],
         satisfaction: dict[str, SatisfactionLevel],
+        selected_remaining_gaps: dict[str, str],
         history: list[ChatMessage],
         latest_assistant_response: str | None,
         mode: RealizationMode,

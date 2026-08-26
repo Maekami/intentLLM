@@ -13,7 +13,7 @@ class EpisodeState(BaseModel):
     exposed_nodes: list[str]
     satisfaction: dict[str, SatisfactionLevel]
     conversation_history: list[ChatMessage] = Field(default_factory=list)
-    end_reachable: bool = False
+    end_exposed: bool = False
     terminated: bool = False
     turn_index: int = 0
     random_seed: int

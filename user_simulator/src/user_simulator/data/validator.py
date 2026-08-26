@@ -42,9 +42,6 @@ class ValidationReport:
 
 
 class DatasetValidator:
-    def __init__(self, *, strict_prefix_closure: bool = False) -> None:
-        self.strict_prefix_closure = strict_prefix_closure
-
     def validate_sample(self, sample: Sample) -> ValidationReport:
         report = ValidationReport()
         sid = sample.sample_id
@@ -105,27 +102,6 @@ class DatasetValidator:
             if not _can_reach_end(node_id, outgoing):
                 error(f"{node_id} cannot reach END")
 
-        for source, targets in outgoing.items():
-            if source == "END":
-                continue
-            intent_targets = sorted(
-                (target for target in targets if target != "END"), key=_safe_index
-            )
-            if intent_targets:
-                start = node_index(source) + 1
-                highest = node_index(intent_targets[-1])
-                required = {f"N{i}" for i in range(start, highest + 1)}
-                missing = sorted(required - set(intent_targets), key=_safe_index)
-                if missing:
-                    severity = "error" if self.strict_prefix_closure else "warning"
-                    report.issues.append(
-                        ValidationIssue(
-                            sid,
-                            f"outgoing targets from {source} violate prefix closure; "
-                            f"missing {missing}",
-                            severity,
-                        )
-                    )
         return report
 
     def validate_samples(self, samples: list[Sample]) -> ValidationReport:

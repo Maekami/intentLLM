@@ -14,5 +14,4 @@ class Controller(Protocol):
         latest_assistant_response: str,
         state: EpisodeState,
         candidates: list[DagNode],
-        has_end_edge: bool,
     ) -> ControllerResult: ...

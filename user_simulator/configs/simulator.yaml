@@ -3,25 +3,34 @@ dataset_path: dataset/DAG.jsonl
 components:
   controller: llm_controller
   satisfaction_updater: llm_satisfaction_updater
+  selection_policy: difficulty_selection
+  realization_policy: difficulty_realization
   user_realizer: llm_user_realizer
-  selection_policy: difficulty_selection_v1
-  realization_policy: difficulty_realization_v1
 
 prompts:
-  controller: configs/prompts/controller_v2.yaml
-  satisfaction: configs/prompts/satisfaction_v2.yaml
-  realizer_clear: configs/prompts/user_clear_v2.yaml
-  realizer_abstract: configs/prompts/user_abstract_v2.yaml
+  controller: configs/prompts/controller.yaml
+  satisfaction: configs/prompts/satisfaction.yaml
+  realizer_clear: configs/prompts/user_clear.yaml
+  realizer_abstract: configs/prompts/user_abstract.yaml
 
 models:
-  controller: deepseek_v4_pro
-  satisfaction: deepseek_v4_pro
-  realizer_clear: deepseek_v4_pro
-  realizer_abstract: deepseek_v4_pro
+  controller: gpt_5_6_luna
+  satisfaction: gpt_5_6_luna
+  realizer_clear: gpt_5_6_luna
+  realizer_abstract: gpt_5_6_luna
 
 policy:
+  # Medium realization mode: probability of Clear; 0.0 is always Abstract,
+  # 1.0 is always Clear.
   medium_clear_probability: 0.5
-  monotonic_satisfaction: true
+  # Medium node selection: choose an ordered-prefix length uniformly from the
+  # inclusive [min, max] range. null means no configured maximum. Setting both
+  # values to n fixes the prefix length at n (or all available nodes if fewer).
+  medium_min_nodes: 1
+  medium_max_nodes: null
+  # Prevent an exposed node from moving backward from satisfied to partial or
+  # unsatisfied (or from partial to unsatisfied) on a later model evaluation.
+  monotonic_satisfaction: false
   auto_expose_backbone_on_empty_queue: true
   enforce_controller_prefix_closure: true
   max_turns: 20

@@ -1,0 +1,48 @@
+# Local vLLM profile for the exact service command documented in README_CN.md.
+# This is the thinking-enabled counterpart of qwen_3_6_27b_vllm_non_thinking.
+profile_name: qwen_3_6_27b_vllm
+provider: vllm
+# Must match `--served-model-name` from `vllm serve`.
+model_id: qwen3.6-27b
+# ADJUSTABLE: OpenAI-compatible API root, including /v1.
+base_url: http://127.0.0.1:8001/v1
+
+# OpenRouter-only routing options are intentionally empty for a local server.
+routing: {}
+
+reasoning:
+  # THINKING PROFILE: use qwen_3_6_27b_vllm_non_thinking for the only other
+  # tested condition.
+  enabled: true
+  # FIXED FOR HF PARITY: Qwen thinking is an on/off mode, not an effort tier.
+  effort: null
+  # The local server returns parsed reasoning separately from the visible
+  # answer. AssistantSession retains it internally but respond() returns only
+  # the visible answer.
+  exclude_from_response: false
+  local_chat_template:
+    # FIXED HF/vLLM SWITCHES for thinking-mode parity.
+    enable_thinking: true
+    preserve_thinking: true
+
+generation:
+  assistant:
+    # FIXED HF RECOMMENDATION: thinking mode for general tasks.
+    temperature: 1.0
+    top_p: 0.95
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 0.0
+    repetition_penalty: 1.0
+    # ADJUSTABLE: positive integer constrained by the server's --max-model-len
+    # after accounting for prompt/history tokens. 32768 is Qwen's recommended
+    # output budget for most queries and fits the documented 65536 deployment.
+    max_completion_tokens: 32768
+
+retry:
+  # ADJUSTABLE: integer >= 1. This is the total number of request attempts.
+  max_attempts: 3
+  # ADJUSTABLE: seconds >= 0.
+  initial_backoff_seconds: 1.0
+  # ADJUSTABLE: seconds >= initial_backoff_seconds.
+  maximum_backoff_seconds: 8.0

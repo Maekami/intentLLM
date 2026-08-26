@@ -1,5 +1,4 @@
 import hashlib
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from string import Formatter
@@ -27,9 +26,7 @@ class PromptTemplate:
     }
 
     name: str
-    version: int
     schema_name: str
-    schema_version: int
     system: str
     user_template: str
     path: str
@@ -39,33 +36,26 @@ class PromptTemplate:
         prompt_path = Path(path)
         with prompt_path.open(encoding="utf-8") as handle:
             raw = yaml.safe_load(handle)
-        required = {
-            "name",
-            "version",
-            "schema_name",
-            "schema_version",
-            "system",
-            "user_template",
-        }
+        required = {"name", "schema_name", "system", "user_template"}
         missing = required - set(raw or {})
         if missing:
             raise ValueError(f"{path} is missing prompt fields: {sorted(missing)}")
+        unknown = set(raw or {}) - required
+        if unknown:
+            raise ValueError(f"{path} contains unknown prompt fields: {sorted(unknown)}")
         prompt = cls(
             name=str(raw["name"]),
-            version=int(raw["version"]),
             schema_name=str(raw["schema_name"]),
-            schema_version=int(raw["schema_version"]),
             system=str(raw["system"]),
             user_template=str(raw["user_template"]),
             path=str(prompt_path),
         )
-        _warn_on_unversioned_change(prompt_path, prompt.version)
         prompt.validate_contract()
         return prompt
 
     @property
     def schema(self) -> SchemaSpec:
-        return resolve_schema(self.schema_name, self.schema_version)
+        return resolve_schema(self.schema_name)
 
     @property
     def placeholders(self) -> set[str]:
@@ -86,39 +76,20 @@ class PromptTemplate:
         if missing:
             raise ValueError(f"{self.path} is missing required placeholders: {sorted(missing)}")
 
-    def render(self, **values: str) -> tuple[list[dict[str, str]], dict[str, str | int]]:
+    def render(self, **values: str) -> tuple[list[dict[str, str]], dict[str, str]]:
         missing = self.placeholders - set(values)
         if missing:
             raise ValueError(f"missing render values for {self.name}: {sorted(missing)}")
         user = self.user_template.format(**values)
         rendered = f"{self.system}\n{user}"
-        metadata: dict[str, str | int] = {
+        metadata = {
             "prompt_name": self.name,
-            "prompt_version": self.version,
             "prompt_path": self.path,
             "prompt_hash": hashlib.sha256(rendered.encode()).hexdigest(),
             "schema_name": self.schema_name,
-            "schema_version": self.schema_version,
             "schema_hash": self.schema.hash,
         }
         return [
             {"role": "system", "content": self.system},
             {"role": "user", "content": user},
         ], metadata
-
-
-def _warn_on_unversioned_change(path: Path, version: int) -> None:
-    manifest_path = Path("configs/prompts/manifest.yaml")
-    if not manifest_path.exists():
-        return
-    with manifest_path.open(encoding="utf-8") as handle:
-        manifest = yaml.safe_load(handle) or {}
-    entry = manifest.get(path.as_posix())
-    if not entry or int(entry["version"]) != version:
-        return
-    actual = hashlib.sha256(path.read_bytes()).hexdigest()
-    if actual != entry["source_hash"]:
-        warnings.warn(
-            f"prompt {path} changed without increasing version {version}",
-            stacklevel=2,
-        )

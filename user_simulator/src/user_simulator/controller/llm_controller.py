@@ -1,5 +1,4 @@
 import json
-from typing import cast
 
 from user_simulator.config import GenerationSettings
 from user_simulator.controller.base import Controller
@@ -10,7 +9,6 @@ from user_simulator.domain.state import EpisodeState
 from user_simulator.exceptions import ControllerOutputError, StructuredOutputError
 from user_simulator.llm.base import StructuredLLMClient
 from user_simulator.llm.prompt import PromptTemplate
-from user_simulator.llm.schemas import ControllerResultV2
 
 
 class LLMController(Controller):
@@ -19,14 +17,13 @@ class LLMController(Controller):
         client: StructuredLLMClient,
         generation: GenerationSettings,
         *,
-        prompt: PromptTemplate | None = None,
-        prompt_path: str = "configs/prompts/controller_v2.yaml",
-        model_profile_name: str = "deepseek_v4_pro",
+        prompt: PromptTemplate,
+        model_profile_name: str = "deepseek_v4_flash_0731",
         semantic_attempts: int = 3,
     ) -> None:
         self.client = client
         self.generation = generation
-        self.prompt = prompt or PromptTemplate.load(prompt_path)
+        self.prompt = prompt
         self.model_profile_name = model_profile_name
         self.semantic_attempts = semantic_attempts
         self.semantic_events: list[dict] = []
@@ -38,27 +35,12 @@ class LLMController(Controller):
         latest_assistant_response: str,
         state: EpisodeState,
         candidates: list[DagNode],
-        has_end_edge: bool,
     ) -> ControllerResult:
-        context = _labeled_context(
-            [
-                (
-                    "VISIBLE CONVERSATION",
-                    [item.model_dump() for item in history],
-                ),
-                ("LATEST ASSISTANT MESSAGE", latest_assistant_response),
-                ("CURRENT FRONTIER", state.current_frontier),
-                ("EXPOSED NODE IDS", state.exposed_nodes),
-                (
-                    "CURRENT SATISFACTION STATES",
-                    {key: value.value for key, value in state.satisfaction.items()},
-                ),
-                (
-                    "ORDERED CANDIDATE NODE DETAILS",
-                    [item.model_dump() for item in candidates],
-                ),
-                ("HAS OUTGOING END EDGE", has_end_edge),
-            ]
+        context = controller_context(
+            history=history,
+            latest_assistant_response=latest_assistant_response,
+            state=state,
+            candidates=candidates,
         )
         expected = [item.node_id for item in candidates]
         self.semantic_events = []
@@ -76,16 +58,12 @@ class LLMController(Controller):
             )
             metadata["model_profile"] = self.model_profile_name
             try:
-                result = cast(
-                    ControllerResultV2,
-                    await self.client.generate_structured(
-                        messages=call_messages,
-                        response_model=self.prompt.schema.model,
-                        schema_name=self.prompt.schema.name,
-                        schema_version=self.prompt.schema.version,
-                        generation=self.generation,
-                        prompt_metadata={**metadata, "semantic_retry_count": attempt},
-                    ),
+                result = await self.client.generate_structured(
+                    messages=call_messages,
+                    response_model=ControllerResult,
+                    schema_name=self.prompt.schema.name,
+                    generation=self.generation,
+                    prompt_metadata={**metadata, "semantic_retry_count": attempt},
                 )
             except StructuredOutputError as exc:
                 raise ControllerOutputError(str(exc)) from exc
@@ -111,6 +89,34 @@ class LLMController(Controller):
             f"controller semantic validation failed after {self.semantic_attempts} "
             f"attempts: {last_problem}"
         )
+
+
+def controller_context(
+    *,
+    history: list[ChatMessage],
+    latest_assistant_response: str,
+    state: EpisodeState,
+    candidates: list[DagNode],
+) -> str:
+    return _labeled_context(
+        [
+            (
+                "VISIBLE CONVERSATION",
+                [item.model_dump() for item in history],
+            ),
+            ("LATEST ASSISTANT MESSAGE", latest_assistant_response),
+            ("CURRENT FRONTIER", state.current_frontier),
+            ("EXPOSED NODE IDS", state.exposed_nodes),
+            (
+                "CURRENT SATISFACTION STATES",
+                {key: value.value for key, value in state.satisfaction.items()},
+            ),
+            (
+                "ORDERED CANDIDATE NODE DETAILS",
+                [item.model_dump() for item in candidates],
+            ),
+        ]
+    )
 
 
 def _labeled_context(sections: list[tuple[str, object]]) -> str:

@@ -4,6 +4,7 @@ from user_simulator.domain.dag import Sample
 from user_simulator.domain.enums import Difficulty
 from user_simulator.engine.episode import Episode
 from user_simulator.llm.mock import MockStructuredLLMClient
+from user_simulator.llm.prompt import PromptTemplate
 from user_simulator.policy.realization import DifficultyRealizationPolicy
 from user_simulator.policy.selection import DifficultySelectionPolicy
 from user_simulator.realizer.llm_realizer import LLMUserRealizer
@@ -39,9 +40,23 @@ def components(responses):
     generation = GenerationSettings(temperature=0, max_completion_tokens=100)
     return (
         client,
-        LLMController(client, generation),
-        LLMSatisfactionUpdater(client, generation),
-        LLMUserRealizer(client, generation, generation),
+        LLMController(
+            client,
+            generation,
+            prompt=PromptTemplate.load("configs/prompts/controller.yaml"),
+        ),
+        LLMSatisfactionUpdater(
+            client,
+            generation,
+            prompt=PromptTemplate.load("configs/prompts/satisfaction.yaml"),
+        ),
+        LLMUserRealizer(
+            client,
+            generation,
+            generation,
+            clear_prompt=PromptTemplate.load("configs/prompts/user_clear.yaml"),
+            abstract_prompt=PromptTemplate.load("configs/prompts/user_abstract.yaml"),
+        ),
     )
 
 
@@ -52,7 +67,7 @@ async def test_complete_episode_exposes_multiple_and_terminates(tmp_path) -> Non
             "selected_node_ids": ["N1"],
             "realization_mode": "clear",
             "coverage": [{"node_id": "N1", "covered": True}],
-            "contains_unsupported_intent": False,
+            "contains_unsupported_task_content": False,
             "summary": "initial",
         },
         {
@@ -60,7 +75,6 @@ async def test_complete_episode_exposes_multiple_and_terminates(tmp_path) -> Non
                 {"node_id": "N2", "exposable": True, "reason": "elicited"},
                 {"node_id": "N3", "exposable": True, "reason": "elicited"},
             ],
-            "end_reachable": False,
             "summary": "expose both",
         },
         {
@@ -69,16 +83,19 @@ async def test_complete_episode_exposes_multiple_and_terminates(tmp_path) -> Non
                     "node_id": "N1",
                     "status": "partially_satisfied",
                     "reason": "The assistant offered a useful outline but omitted constraints.",
+                    "remaining_gap": "Incorporate the user's important constraints into the plan.",
                 },
                 {
                     "node_id": "N2",
                     "status": "unsatisfied",
                     "reason": "The assistant has not addressed this newly exposed constraint.",
+                    "remaining_gap": None,
                 },
                 {
                     "node_id": "N3",
                     "status": "unsatisfied",
                     "reason": "The assistant has not supplied the requested final output.",
+                    "remaining_gap": None,
                 },
             ],
             "summary": "not done",
@@ -92,13 +109,8 @@ async def test_complete_episode_exposes_multiple_and_terminates(tmp_path) -> Non
                 {"node_id": "N2", "covered": True},
                 {"node_id": "N3", "covered": True},
             ],
-            "contains_unsupported_intent": False,
+            "contains_unsupported_task_content": False,
             "summary": "followup",
-        },
-        {
-            "decisions": [],
-            "end_reachable": True,
-            "summary": "end structurally reachable",
         },
         {
             "updates": [
@@ -106,16 +118,19 @@ async def test_complete_episode_exposes_multiple_and_terminates(tmp_path) -> Non
                     "node_id": "N1",
                     "status": "satisfied",
                     "reason": "The assistant supplied the complete requested plan.",
+                    "remaining_gap": None,
                 },
                 {
                     "node_id": "N2",
                     "status": "satisfied",
                     "reason": "The assistant incorporated the important stated constraint.",
+                    "remaining_gap": None,
                 },
                 {
                     "node_id": "N3",
                     "status": "satisfied",
                     "reason": "The assistant delivered the requested final output.",
+                    "remaining_gap": None,
                 },
             ],
             "summary": "all done",
@@ -138,18 +153,34 @@ async def test_complete_episode_exposes_multiple_and_terminates(tmp_path) -> Non
     )
     initial = await episode.start()
     assert initial.user_message
-    assert "INITIAL TURN" in client.calls[0]["messages"][-1]["content"]
+    assert 'TURN TYPE\n"initial"' in client.calls[0]["messages"][-1]["content"]
+    assert 'LATEST ASSISTANT RESPONSE\n"none"' in client.calls[0]["messages"][-1]["content"]
     followup = await episode.submit_assistant("Tell me the relevant details.")
     assert episode.state.exposed_nodes == ["N1", "N2", "N3"]
+    assert episode.state.end_exposed
     assert not followup.terminal
+    assert "SELECTED NODE REMAINING GAPS" in client.calls[3]["messages"][-1]["content"]
+    assert (
+        "Incorporate the user's important constraints into the plan."
+        in client.calls[3]["messages"][-1]["content"]
+    )
     terminal = await episode.submit_assistant("Here is the complete result.")
     assert terminal.terminal
     assert episode.state.terminated
     assert "END" not in episode.state.exposed_nodes
     assert "END" not in episode.state.satisfaction
-    assert len(client.calls) == 6
+    assert len(client.calls) == 5
     event_types = [event.event_type for event in audit.events]
     assert "controller_prefix_normalized" in event_types
+    assert "system_end_closure_checked" in event_types
+    end_event = next(event for event in audit.events if event.event_type == "end_exposed")
+    assert end_event.payload["source"] == "system_graph_closure"
+    assert end_event.payload["rule"] == "terminal_only_frontier_after_advance"
+    assert any(
+        event.event_type == "controller_skipped"
+        and event.payload["reason"] == "END was exposed on an earlier turn"
+        for event in audit.events
+    )
     assert "satisfaction_applied" in event_types
     assert "episode_terminated" in event_types
     assert (audit.run_dir / "events.jsonl").exists()
@@ -164,7 +195,7 @@ async def test_natural_backbone_exposure() -> None:
             "selected_node_ids": ["N1"],
             "realization_mode": "clear",
             "coverage": [{"node_id": "N1", "covered": True}],
-            "contains_unsupported_intent": False,
+            "contains_unsupported_task_content": False,
             "summary": "initial",
         },
         {
@@ -172,7 +203,6 @@ async def test_natural_backbone_exposure() -> None:
                 {"node_id": "N2", "exposable": False, "reason": "not elicited"},
                 {"node_id": "N3", "exposable": False, "reason": "prefix"},
             ],
-            "end_reachable": False,
             "summary": "none",
         },
         {
@@ -181,6 +211,7 @@ async def test_natural_backbone_exposure() -> None:
                     "node_id": "N1",
                     "status": "satisfied",
                     "reason": "The assistant fully addressed the first exposed need.",
+                    "remaining_gap": None,
                 }
             ],
             "summary": "done",
@@ -190,7 +221,7 @@ async def test_natural_backbone_exposure() -> None:
             "selected_node_ids": ["N2"],
             "realization_mode": "clear",
             "coverage": [{"node_id": "N2", "covered": True}],
-            "contains_unsupported_intent": False,
+            "contains_unsupported_task_content": False,
             "summary": "next",
         },
     ]

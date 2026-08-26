@@ -1,0 +1,87 @@
+# Profile identifiers are not tuning knobs. This profile pins the 0731 revision
+# instead of the moving `~deepseek/deepseek-v4-flash-latest` alias.
+profile_name: deepseek_v4_flash_0731_high
+provider: openrouter
+model_id: deepseek/deepseek-v4-flash-0731
+base_url: https://openrouter.ai/api/v1
+
+routing:
+  # FIXED: keep true so OpenRouter only selects endpoints supporting every
+  # requested parameter, especially strict JSON Schema response formatting.
+  require_parameters: true
+  # ADJUSTABLE: true | false. True improves availability by trying another
+  # compatible endpoint; false prevents provider fallback.
+  allow_fallbacks: true
+
+reasoning:
+  # BACKWARD-COMPATIBLE FALLBACK: used only when a generation entry omits its
+  # component-level reasoning block.
+  enabled: true
+  effort: high
+  exclude_from_response: true
+
+generation:
+  controller:
+    # ADJUSTABLE: 0.0-2.0; 0.0-0.3 is recommended for stable structured output.
+    temperature: 0.0
+    # ADJUSTABLE: positive integer up to the active endpoint's output limit;
+    # 256-8192 is the practical range for this simulator.
+    max_completion_tokens: 16384
+    reasoning:
+      # ADJUSTABLE: true | false. When enabled, effort supports low | high | max.
+      enabled: true
+      effort: high
+      exclude_from_response: true
+  satisfaction:
+    # ADJUSTABLE: 0.0-2.0; 0.0-0.3 is recommended for stable structured output.
+    temperature: 0.0
+    # ADJUSTABLE: positive integer up to the active endpoint's output limit;
+    # 256-8192 is the practical range for this simulator.
+    max_completion_tokens: 16384
+    reasoning:
+      # ADJUSTABLE: true | false. Disabled calls omit effort and exclusion.
+      enabled: true
+      effort: high
+      exclude_from_response: true
+  realizer_clear:
+    # ADJUSTABLE: 0.0-2.0; 0.0-0.7 is recommended for concise natural wording.
+    temperature: 0.0
+    # ADJUSTABLE: positive integer up to the active endpoint's output limit;
+    # 128-4096 is the practical range for short user messages.
+    max_completion_tokens: 16384
+    reasoning:
+      # ADJUSTABLE: true | false. Disabled calls omit effort and exclusion.
+      enabled: true
+      effort: high
+      exclude_from_response: true
+  realizer_abstract:
+    # ADJUSTABLE: 0.0-2.0; 0.0-0.7 is recommended for concise natural wording.
+    temperature: 0.0
+    # ADJUSTABLE: positive integer up to the active endpoint's output limit;
+    # 128-4096 is the practical range for short user messages.
+    max_completion_tokens: 16384
+    reasoning:
+      # ADJUSTABLE: true | false. Disabled calls omit effort and exclusion.
+      enabled: true
+      effort: high
+      exclude_from_response: true
+
+structured_output:
+  # FIXED CONTRACT: the first three values must remain unchanged. The client
+  # validates every response against the project's strict Pydantic-derived schema.
+  type: json_schema
+  strict: true
+  require_parameters: true
+  # RECOMMENDED FOR THIS MODEL: true | false. OpenRouter's response-healing
+  # plugin repairs malformed JSON syntax and Markdown wrappers before local
+  # schema validation. It does not replace semantic validation or retries.
+  response_healing: true
+
+retry:
+  # ADJUSTABLE: integer >= 1; 1-5 is recommended. Four attempts give this
+  # profile one additional recovery chance for schema/semantic contract errors.
+  max_attempts: 4
+  # ADJUSTABLE: seconds >= 0; 0.1-10.0 is recommended.
+  initial_backoff_seconds: 1.0
+  # ADJUSTABLE: seconds >= initial_backoff_seconds; 1.0-60.0 is recommended.
+  maximum_backoff_seconds: 8.0

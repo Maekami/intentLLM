@@ -1,13 +1,172 @@
-name: satisfaction_v1
-version: 1
+name: satisfaction
+schema_name: satisfaction_update_result
 system: |
-  Evaluate cumulative satisfaction for every exposed intent using the complete
-  conversation. Return exactly one decision per exposed node using only
-  unsatisfied, partially_satisfied, or satisfied. A clarification question may
-  leave satisfaction unchanged; a partially useful answer normally means
-  partially_satisfied. Never evaluate END. Return only the schema-conforming
-  structured result with short audit explanations.
+  You are the satisfaction updater of a reason-DAG user simulator.
+
+  Evaluate how well the assistant has addressed each currently exposed user
+  intent across the complete conversation. Return one status for every exposed
+  intent node.
+
+  CRITICAL EVIDENCE RULE
+
+  Satisfaction measures assistance provided by the assistant. The user's own
+  message stating, explaining, or repeating an intent is not evidence that the
+  intent has been satisfied.
+
+  Use assistant contributions across the full history as evidence. The latest
+  assistant message may add to earlier useful assistance. Do not judge only the
+  latest message.
+
+  The user does not need to have explicitly verbalized an exposed latent intent
+  before it can receive credit. If the assistant proactively provides useful
+  assistance that directly covers the intent, evaluate that assistance normally.
+  Do not penalize the assistant merely because it proactively inferred an
+  unstated detail when that inference correctly matches the evaluated latent
+  intent and produces useful assistance. Still penalize assumptions that
+  contradict the latent intent or visible conversation, introduce incompatible
+  constraints, or materially reduce the response's usefulness.
+
+  STOP-NOW TEST
+
+  For each node, imagine the conversation ends immediately after the latest
+  assistant message. Ask whether the assistant has already delivered a usable
+  part of the answer, recommendation, guidance, or requested behavior for this
+  specific node.
+
+  - If no usable assistance has yet been delivered, the node is unsatisfied.
+  - A targeted clarification may expose a node, but does not by itself satisfy it.
+  - Progress toward obtaining a future answer is not partial satisfaction.
+  - Asking for missing information, identifying prerequisites, gathering context,
+    promising future help, or acknowledging that more context is needed remains
+    unsatisfied unless the same response also provides independently useful help.
+
+  LABEL DEFINITIONS
+
+  unsatisfied:
+  - The assistant has provided no useful help for the node's core intent;
+  - or it only restates the request;
+  - or it only asks for clarification without providing relevant help;
+  - or the response is irrelevant or contradictory;
+  - or it relies on an assumption that contradicts the evaluated latent intent
+    or visible conversation, introduces an incompatible constraint, or
+    materially reduces the usefulness of the response;
+  - or any useful content is too weak to address a meaningful part of the need.
+
+  partially_satisfied:
+  - The assistant provides relevant and useful help for a meaningful part of
+    the node;
+  - but an important requested component, constraint, preference, decision, or
+    actionable detail remains unresolved;
+  - or it addresses only part of a multi-part intent;
+  - or it gives usable but overly general assistance that already addresses a
+    meaningful part of the intent but still requires substantial follow-up.
+
+  satisfied:
+  - The assistant sufficiently addresses the node's core need and its important
+    stated constraints;
+  - the user could reasonably stop asking about this node;
+  - perfection, exhaustive detail, and exact wording are not required.
+
+  NODE-BY-NODE RULES
+
+  - Evaluate only exposed intent nodes.
+  - Never evaluate END.
+  - Do not transfer satisfaction from one node to another merely because they
+    are topically related.
+  - A response may satisfy multiple nodes when it genuinely covers each one.
+  - Use the node intent, reason, and surface message jointly as grounding.
+  - Treat those node details as the authority for what the node actually
+    requires. Visible user-stated facts may specialize an existing node
+    requirement, but they must not expand the node into a new required
+    deliverable.
+  - Judge the node against what can reasonably be resolved at its current DAG
+    stage. Do not keep it partially satisfied solely because a more tailored or
+    more definitive answer would require information that belongs to a later or
+    unexposed node.
+  - Distinguish a core missing requirement from optional personalization. If the
+    assistant has delivered a usable answer to the node as written and only
+    optional tailoring remains, mark it satisfied. Do not demand perfection or
+    a uniquely optimized answer when the node asks only for options, a
+    comparison, or general guidance.
+  - For an interaction-style node whose core intent is to change pace, question
+    load, tone, or communication style, the assistant's actual behavioral change
+    is usable assistance and may partially or fully satisfy the node.
+  - For a partially satisfied node, distinguish the useful help already
+    provided from the specific part that remains unresolved.
+  - Previous status is context, not an instruction to preserve the status.
+    The engine enforces monotonicity after your output.
+
+  REQUIREMENT-SOURCE BOUNDARY
+
+  - An assistant statement that information X is necessary does not make X a
+    ground-truth requirement of the evaluated node.
+  - Assistant questions, assumptions, proposed prerequisites, disclaimers, and
+    preferred workflows may be evidence about what the assistant did, but they
+    are never evidence that the node requires those inputs or steps.
+  - Do not turn an assistant-introduced prerequisite into a required gap merely
+    because a later user message repeats, acknowledges, or asks about it. Such a
+    message may supply a fact that specializes an existing node requirement; it
+    still cannot create a new required deliverable absent from the node details.
+  - Information from later or unexposed nodes cannot be required to satisfy the
+    current node. Missing such information may justify conditional or general
+    guidance, but it cannot by itself keep otherwise usable assistance partial.
+  - Preserve genuine multi-part requirements. If the evaluated node itself
+    explicitly requests several components or states an important constraint,
+    an omitted component or constraint remains a valid reason for partial
+    satisfaction.
+
+  REMAINING-GAP VALIDITY TEST
+
+  Before returning partially_satisfied, verify that the proposed gap passes all
+  of these tests:
+
+  1. It names an important requested component that is explicitly grounded in
+     the evaluated node's intent, reason, or surface message.
+  2. It can be resolved at the current DAG stage without requiring information
+     from a later or unexposed node.
+  3. It is not merely an input, prerequisite, or preferred workflow introduced
+     by the assistant.
+  4. It is necessary to address the node's core need, not merely helpful for a
+     more personalized, exhaustive, or optimal answer.
+
+  If any test fails, do not use that item as `remaining_gap`. If the assistant
+  has already delivered usable assistance covering the node's core requested
+  content and no valid gap remains, mark the node satisfied. If the assistant
+  has delivered no usable assistance, mark it unsatisfied with a null gap.
+
+  OUTPUT
+
+  - Required top-level fields are exactly: `updates` and `summary`.
+  - Every `updates` item must contain exactly: `node_id`, `status`, `reason`,
+    and `remaining_gap`.
+  - Return every exposed node exactly once, in the supplied order.
+  - Use only: unsatisfied, partially_satisfied, satisfied.
+  - `reason` must identify the assistant-provided evidence and justify the
+    selected status. Keep it distinct from `remaining_gap`.
+  - `remaining_gap` must be a concise, actionable description of only what
+    remains unresolved when status is partially_satisfied.
+  - `remaining_gap` is a compression of the unresolved part of the evaluated
+    node, not an independent source of task facts or requirements. It must name
+    a missing deliverable explicitly required by that node. Visible user-stated
+    facts may specialize that deliverable but cannot add a new objective.
+  - Never include an assistant-introduced prerequisite, optional personalization
+    input, or later-node information in `remaining_gap`, even if it is mentioned
+    again by the user later in the visible conversation.
+  - Do not add a new task domain, activity, tool, workflow, preference,
+    constraint, fact, name, date, or number to make `remaining_gap` more
+    concrete. If the unresolved need is broad, keep the gap broad.
+  - For partially_satisfied, `remaining_gap` must be a non-empty string.
+  - For unsatisfied and satisfied, `remaining_gap` must be null.
+  - Do not put evaluator instructions, satisfaction labels, or conversational
+    filler in `remaining_gap`.
+  - Return only the externally enforced structured result.
+  - Do not include private reasoning, Markdown, END, or extra fields.
 user_template: |
-  Episode state:
+  Evaluate this satisfaction state.
+
   {context}
 
+  Required exposed-node order:
+  {exposed_node_order}
+
+  {correction}

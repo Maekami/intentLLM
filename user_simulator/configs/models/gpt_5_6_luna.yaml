@@ -1,0 +1,78 @@
+# Profile identifiers are not tuning knobs. This profile calls GPT-5.6 Luna
+# through OpenRouter's OpenAI-compatible Chat Completions endpoint.
+profile_name: gpt_5_6_luna
+provider: openrouter
+model_id: openai/gpt-5.6-luna
+base_url: https://openrouter.ai/api/v1
+
+routing:
+  # FIXED: keep true so OpenRouter only selects endpoints that support every
+  # requested parameter, especially strict JSON Schema response formatting.
+  require_parameters: true
+  # ADJUSTABLE: true | false. True improves availability by trying another
+  # compatible endpoint; false prevents provider fallback.
+  allow_fallbacks: true
+
+reasoning:
+  # BACKWARD-COMPATIBLE FALLBACK: used only when a generation entry omits its
+  # component-level reasoning block.
+  enabled: true
+  effort: low
+  exclude_from_response: true
+
+generation:
+  controller:
+    # FIXED FOR THIS PROFILE: keep null. OpenRouter does not currently advertise
+    # `temperature` for GPT-5.6 Luna, so null makes the client omit the parameter.
+    temperature: null
+    # ADJUSTABLE: integer 1-128000; 256-8192 is recommended for this simulator.
+    max_completion_tokens: 16384
+    reasoning:
+      # ADJUSTABLE: enabled true | false; effort supports the model's advertised levels.
+      enabled: true
+      effort: low
+      exclude_from_response: true
+  satisfaction:
+    # FIXED FOR THIS PROFILE: keep null; see the compatibility note above.
+    temperature: null
+    # ADJUSTABLE: integer 1-128000; 256-8192 is recommended for this simulator.
+    max_completion_tokens: 16384
+    reasoning:
+      # ADJUSTABLE: enabled true | false; disabled calls omit effort and exclusion.
+      enabled: true
+      effort: low
+      exclude_from_response: true
+  realizer_clear:
+    # FIXED FOR THIS PROFILE: keep null; see the compatibility note above.
+    temperature: null
+    # ADJUSTABLE: integer 1-128000; 128-4096 is recommended for short messages.
+    max_completion_tokens: 16384
+    reasoning:
+      # Realizer reasoning is intentionally disabled for this baseline.
+      enabled: false
+  realizer_abstract:
+    # FIXED FOR THIS PROFILE: keep null; see the compatibility note above.
+    temperature: null
+    # ADJUSTABLE: integer 1-128000; 128-4096 is recommended for short messages.
+    max_completion_tokens: 16384
+    reasoning:
+      # Realizer reasoning is intentionally disabled for this baseline.
+      enabled: false
+
+structured_output:
+  # FIXED CONTRACT: keep the first three values unchanged. GPT-5.6 Luna supports
+  # structured outputs, and the client validates every response strictly.
+  type: json_schema
+  strict: true
+  require_parameters: true
+  # ADJUSTABLE: true | false. Enables OpenRouter's malformed-JSON response
+  # healing layer; disabled because this profile has not needed it in current runs.
+  response_healing: false
+
+retry:
+  # ADJUSTABLE: integer >= 1; 1-5 is recommended. This is the total attempt count.
+  max_attempts: 3
+  # ADJUSTABLE: seconds >= 0; 0.1-10.0 is recommended.
+  initial_backoff_seconds: 1.0
+  # ADJUSTABLE: seconds >= initial_backoff_seconds; 1.0-60.0 is recommended.
+  maximum_backoff_seconds: 8.0

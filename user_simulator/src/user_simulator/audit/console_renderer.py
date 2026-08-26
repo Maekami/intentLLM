@@ -20,6 +20,7 @@ class ConsoleAuditRenderer:
             return
         turn = logger.latest_turn_events[-1].turn_index
         controller_request = events.get("controller_requested", {})
+        controller_skipped = events.get("controller_skipped", {})
         raw_controller = events.get("controller_raw_result", {})
         normalized = events.get("controller_prefix_normalized", {})
         exposure = events.get("nodes_exposed", {})
@@ -44,13 +45,14 @@ class ConsoleAuditRenderer:
                 "CONTROLLER",
                 {
                     "frontier before": controller_request.get("frontier"),
+                    "skipped": controller_skipped.get("reason"),
                     "outgoing candidates": controller_request.get("candidates"),
                     "raw decisions": raw_controller_response.get("decisions")
                     or "<hidden at summary audit level>",
                     "normalized decisions": normalized.get("decisions"),
                     "prefix violations": normalized.get("violations"),
                     "newly exposed": exposure.get("newly_exposed"),
-                    "END reachable": exposure.get("end_reachable"),
+                    "END exposed": exposure.get("end_exposed", termination.get("end_exposed")),
                     "frontier after": exposure.get("frontier_after"),
                 },
             ),
@@ -60,6 +62,7 @@ class ConsoleAuditRenderer:
                     "status before": satisfaction.get("before"),
                     "proposed status": satisfaction.get("proposed")
                     or _status_map(satisfaction_raw),
+                    "remaining gaps": _remaining_gap_map(satisfaction_raw),
                     "applied status": satisfaction.get("after"),
                     "monotonicity violations": satisfaction.get("violations"),
                 },
@@ -77,6 +80,7 @@ class ConsoleAuditRenderer:
                 {
                     "unresolved queue": events.get("unresolved_queue_built", {}).get("queue"),
                     "selected nodes": selection.get("selected_nodes"),
+                    "selected remaining gaps": generation_request.get("selected_remaining_gaps"),
                     "selection rule": selection.get("selection_rule"),
                     "realization mode": generation_request.get("mode"),
                     "generated message": generated.get("user_message"),
@@ -118,12 +122,15 @@ class ConsoleAuditRenderer:
             component = call.get("component", "unknown")
             rows[component] = {
                 "model": call.get("model_id"),
-                "schema": _versioned_hash(call, "schema"),
-                "prompt": _versioned_hash(call, "prompt"),
+                "schema": _named_hash(call, "schema"),
+                "prompt": _named_hash(call, "prompt"),
+                "git commit": call.get("git_commit"),
                 "latency": call.get("latency_seconds"),
                 "tokens": {
                     "input": call.get("input_tokens"),
                     "output": call.get("output_tokens"),
+                    "thinking": call.get("thinking_tokens"),
+                    "answer": call.get("answer_tokens"),
                 },
                 "retries": {
                     "transport": call.get("transport_retry_count"),
@@ -144,10 +151,17 @@ def _status_map(raw_event: dict[str, Any]) -> dict[str, str] | None:
     return {item["node_id"]: item["status"] for item in updates}
 
 
-def _versioned_hash(call: dict[str, Any], prefix: str) -> dict[str, Any]:
+def _remaining_gap_map(raw_event: dict[str, Any]) -> dict[str, str] | None:
+    updates = _as_dict(raw_event.get("raw_response")).get("updates")
+    if not updates:
+        return None
+    gaps = {item["node_id"]: item["remaining_gap"] for item in updates if item.get("remaining_gap")}
+    return gaps or None
+
+
+def _named_hash(call: dict[str, Any], prefix: str) -> dict[str, Any]:
     return {
         "name": call.get(f"{prefix}_name"),
-        "version": call.get(f"{prefix}_version"),
         "hash": call.get(f"{prefix}_hash"),
     }
 

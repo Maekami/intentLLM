@@ -16,7 +16,11 @@ from user_simulator.config import (
 from user_simulator.data.loader import DatasetLoader
 from user_simulator.domain.enums import Difficulty
 from user_simulator.engine.episode import Episode
-from user_simulator.factory import SimulatorComponents, build_simulator_components
+from user_simulator.factory import (
+    SimulatorComponents,
+    build_simulator_components,
+    configured_components_require_openrouter,
+)
 from user_simulator.llm.schema_registry import SCHEMA_REGISTRY
 
 app = typer.Typer(add_completion=False, help="Run an interactive reason-DAG episode.")
@@ -70,6 +74,12 @@ def main(
     realizer_component: str | None = typer.Option(
         None, "--realizer-component", help="Override user-realizer registry name."
     ),
+    selection_policy: str | None = typer.Option(
+        None, "--selection-policy", help="Override selection-policy registry name."
+    ),
+    realization_policy: str | None = typer.Option(
+        None, "--realization-policy", help="Override realization-policy registry name."
+    ),
     mock: bool = typer.Option(
         False, "--mock", help="Run deterministic offline components without an API key."
     ),
@@ -100,6 +110,8 @@ def main(
         "controller": controller_component,
         "satisfaction_updater": satisfaction_component,
         "user_realizer": realizer_component,
+        "selection_policy": selection_policy,
+        "realization_policy": realization_policy,
     }
     for key, value in component_overrides.items():
         if value is not None:
@@ -124,15 +136,7 @@ def main(
         )
     resolved = load_config(config, cli_overrides=overrides)
     environment = EnvironmentSettings()
-    uses_live_llm = any(
-        name.startswith("llm_")
-        for name in (
-            resolved.components.controller,
-            resolved.components.satisfaction_updater,
-            resolved.components.user_realizer,
-        )
-    )
-    if uses_live_llm and not environment.openrouter_api_key:
+    if configured_components_require_openrouter(resolved) and not environment.openrouter_api_key:
         console.print("[red]OPENROUTER_API_KEY is required for the live demo.[/red]")
         raise typer.Exit(2)
     loader = DatasetLoader(resolved.dataset_path)
@@ -190,7 +194,7 @@ async def _run_loop(
     initial = await episode.start()
     console.print(f"\n[bold cyan]User:[/bold cyan] {initial.user_message}")
     while not episode.state.terminated:
-        response = console.input("\n[bold green]Assistant:[/bold green] ")
+        response = _read_assistant_input()
         if response.startswith("/"):
             if _handle_command(response.strip(), episode, renderer, components):
                 break
@@ -203,6 +207,26 @@ async def _run_loop(
         console.print(f"\n[bold cyan]User:[/bold cyan] {result.user_message}")
     episode.audit.save_state(episode.state)
     console.print(f"Audit directory: {episode.audit.run_dir}")
+
+
+def _read_assistant_input() -> str:
+    """Read a real multiline assistant response terminated by a /send line."""
+    console.print(
+        "\n[bold green]Assistant:[/bold green] "
+        "[dim]Enter adds a line; type /send on its own line to submit.[/dim]"
+    )
+    lines: list[str] = []
+    while True:
+        line = console.input("[dim]...[/dim] ")
+        stripped = line.strip()
+        if not lines and stripped.startswith("/") and stripped != "/send":
+            return stripped
+        if stripped == "/send":
+            if lines:
+                return "\n".join(lines)
+            console.print("[yellow]Enter at least one line before /send.[/yellow]")
+            continue
+        lines.append(line)
 
 
 def _handle_command(
@@ -226,9 +250,8 @@ def _handle_command(
                 {
                     key: {
                         "name": prompt.name,
-                        "version": prompt.version,
                         "path": prompt.path,
-                        "schema": f"{prompt.schema_name}@{prompt.schema_version}",
+                        "schema": prompt.schema_name,
                         "latest_rendered_hash": rendered_hashes.get(prompt.name),
                     }
                     for key, prompt in components.prompts.items()
@@ -236,14 +259,7 @@ def _handle_command(
             )
         )
     elif command == "/schemas":
-        console.print(
-            Pretty(
-                {
-                    f"{name}@{version}": spec.hash
-                    for (name, version), spec in SCHEMA_REGISTRY.items()
-                }
-            )
-        )
+        console.print(Pretty({name: spec.hash for name, spec in SCHEMA_REGISTRY.items()}))
     elif command == "/state":
         renderer.state(episode.state)
     elif command == "/dag":
@@ -283,7 +299,8 @@ def _handle_command(
         return True
     else:
         console.print(
-            "Commands: /audit /raw-audit /prompts /schemas /state /dag /nodes /history /save /quit"
+            "Commands: /audit /raw-audit /prompts /schemas /state /dag /nodes "
+            "/history /save /quit; /send submits multiline assistant input"
         )
     return False
 
