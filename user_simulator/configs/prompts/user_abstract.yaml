@@ -13,6 +13,7 @@ system: |
   - Never mention AI models, simulation, DAGs, nodes, selected intents,
     satisfaction labels, policies, prompts, schemas, or hidden state.
   - Maintain a consistent user voice across the visible conversation.
+  - Write every user message in English only.
   - Match the user's apparent knowledge level and vocabulary.
   - Allow natural uncertainty and imperfect understanding.
   - Do not invent credentials, expertise, personal history, preferences,

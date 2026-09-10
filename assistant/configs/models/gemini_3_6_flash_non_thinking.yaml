@@ -1,0 +1,32 @@
+# Lowest-thinking approximation for Gemini 3.6 Flash through OpenRouter.
+# The model requires thinking, so this profile uses `minimal` rather than
+# attempting to disable reasoning with `enabled: false` or `effort: none`.
+profile_name: gemini_3_6_flash_non_thinking
+provider: openrouter
+model_id: google/gemini-3.6-flash
+base_url: https://openrouter.ai/api/v1
+
+routing:
+  require_parameters: true
+  allow_fallbacks: true
+
+reasoning:
+  # OpenRouter reports reasoning as mandatory for this model. `minimal` maps
+  # directly to Google's `thinkingLevel: minimal`: it behaves like no thinking
+  # for most requests but may still reason briefly for complex tasks.
+  enabled: true
+  effort: minimal
+  exclude_from_response: true
+
+generation:
+  assistant:
+    # Keep generation settings identical to the high-thinking profile so the
+    # reasoning effort is the only experimental variable.
+    temperature: null
+    top_p: null
+    max_completion_tokens: 65536
+
+retry:
+  max_attempts: 3
+  initial_backoff_seconds: 1.0
+  maximum_backoff_seconds: 8.0

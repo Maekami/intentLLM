@@ -1,0 +1,54 @@
+# Development-set Evo-Memory evolution settings.
+#
+# This file is read only by `interaction_pipeline.cli.evo`. The existing test
+# evaluator (`interaction_pipeline.cli.batch`) continues to use pipeline.yaml.
+dataset:
+  # Frozen development data produced offline by
+  # user_simulator/dataset/thoughttrace_3plus_no_dag/annotation_runs_full/
+  # gpt_5_6_sol_reason_dag_v7/assign_evolution_difficulties.py.
+  # Relative paths are resolved from the interaction_pipeline directory.
+  path: ../user_simulator/dataset/DAG_evolution_dev.jsonl
+  original_path: ../user_simulator/dataset/DAG_evolution_dev_original.jsonl
+  metadata_path: ../user_simulator/dataset/DAG_evolution_dev_metadata.json
+
+  # Each processed JSONL row carries its preassigned difficulty in this field.
+  # The evo entry never re-randomizes or overrides it at runtime.
+  difficulty_field: difficulty
+  expected_sample_count: 1000
+  expected_difficulty_counts:
+    easy: 334
+    medium: 333
+    hard: 333
+
+run:
+  # Result-affecting learning granularity: every group reads one frozen memory
+  # snapshot, then commits its successful experiences together at the barrier.
+  mini_batch_size: 8
+
+  # Maximum concurrently active samples inside one mini-batch. Keep this no
+  # larger than mini_batch_size. It affects scheduling/provider load and can
+  # affect stochastic model results even though memory is frozen per batch.
+  concurrency: 8
+
+  # Full-episode infrastructure retries after the initial attempt. Turn-limit
+  # failures are valid behavioral outcomes and are never retried. 0 means every
+  # dev sample is executed once. Transport retries inside one LLM request remain
+  # controlled by the selected model profile's retry.max_attempts setting.
+  sample_retries: 0
+
+  # Simulator randomness only. This does not assign difficulty; difficulty is
+  # frozen in the processed dataset by the offline script's separate seed.
+  seed: 42
+
+  # null uses the simulator config's max_turns; otherwise provide an integer >= 1.
+  max_turns: null
+
+  # Root directory, resolved from the interaction_pipeline project directory.
+  # With group_output_by_profile=true, the final output becomes
+  # runs_evolution/<assistant profile_name>/evo_<id>/.
+  output_dir: runs_evolution
+
+  # Keep true when launching multiple model/framework conditions in parallel.
+  # Each memory-enabled profile name includes model+method, for example
+  # gpt_5_6_luna_exprag. false restores the previous flat output layout.
+  group_output_by_profile: true

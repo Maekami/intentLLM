@@ -1,10 +1,48 @@
 components:
   assistant: llm_assistant
-  # Available baselines: base | prompt_base
+  # Available baselines: base | prompt_base | interactcomp_react | trace2skill
+  # base means no Prompted-Base system prompt. A model profile with skill:
+  # framework: trace2skill still activates its own bound static skill.
   baseline: base
+  # The Trace2Skill authoring pipeline overrides this to false so development
+  # rollouts always start from No Skill.
+  profile_skill_enabled: true
 
 prompts:
   prompt_base: configs/prompts/prompt_base.yaml
+  interactcomp_react: configs/prompts/interactcomp_react.yaml
+  interactcomp_action_guard: configs/prompts/interactcomp_action_guard.yaml
+  # Legacy/ad-hoc path used only by an explicit trace2skill baseline whose model
+  # profile does not bind its own skill.
+  trace2skill: configs/skills/trace2skill/SKILL.md
+
+# The second-layer semantic validator is enabled for new InteractComp ReAct
+# runs. Set this to false (or pass --no-react-action-guard) to retain only the
+# first-layer action prompt and schema/parser validation.
+interactcomp_react:
+  # Official ten action rounds are mapped to local semantic action slots inside
+  # one simulator-visible turn. A schema-valid action accepted by the guard is
+  # the only action submitted to the simulator.
+  semantic_action_budget_per_turn: 10
+  # First format attempt plus three retries in the same semantic slot.
+  format_retries_per_slot: 3
+  action_guard:
+    enabled: true
+    # Model identity/routing/retry come from the unified YAML selected by
+    # --simulator-model-profile. These sampling settings are shared across all
+    # tested assistant models, matching the official user-LLM temperature
+    # override rather than inheriting an assistant profile.
+    generation:
+      temperature: 1.0
+      top_p: 1.0
+      max_completion_tokens: 2048
+    # Official AskNL validation makes one independent decision per candidate:
+    # no majority re-judgment and no cross-round verdict cache.
+    confirm_rejections: false
+    cache_verdicts: false
+    # Official validator output is checked once. Malformed output fails closed,
+    # rejects the candidate, and consumes one semantic action slot.
+    invalid_output_retries: 0
 
 models:
   # Available additional profiles include deepseek_v4_flash_0731/gpt_5_6_luna.
@@ -14,6 +52,14 @@ models:
   # Evo-Memory OpenRouter examples (memory is still configured inside profile):
   # - qwen_3_6_27b_exprag
   # - qwen_3_6_27b_remem
+  # Profile-bound static-skill conditions:
+  # - qwen_3_6_27b_trace2skill
+  # - gpt_5_6_luna_trace2skill
+  # - gemini_3_6_flash_trace2skill
+  # InteractComp ReAct ask/answer conditions (memory-free, no static skill):
+  # - qwen_3_6_27b_react
+  # - gpt_5_6_luna_react
+  # - gemini_3_6_flash_react
   # Local vLLM equivalents for the documented 127.0.0.1:8001 service:
   # - qwen_3_6_27b_vllm: thinking enabled
   # - qwen_3_6_27b_vllm_non_thinking: thinking disabled

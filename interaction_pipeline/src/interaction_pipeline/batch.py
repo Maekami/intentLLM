@@ -19,6 +19,8 @@ from interaction_pipeline.core import RunResult, record_setup_failure, run_inter
 from interaction_pipeline.prepare import PreparedPipeline
 
 BatchProgressCallback = Callable[[int, int, RunResult], None]
+EVALUATION_RETRY_POLICY = "all_failures"
+EVOLUTION_RETRY_POLICY = "infrastructure_failures_only"
 
 
 @dataclass(frozen=True)
@@ -34,21 +36,37 @@ async def run_batch(
     output_root: str | Path,
     concurrency: int,
     sample_retries: int = 3,
+    update_memory: bool = True,
+    sample_seeds: list[int] | None = None,
     progress_callback: BatchProgressCallback | None = None,
 ) -> tuple[Path, list[RunResult]]:
     if sample_retries < 0:
         raise ValueError("sample_retries must be greater than or equal to 0")
+    if sample_seeds is not None and len(sample_seeds) != len(samples):
+        raise ValueError("sample_seeds must contain exactly one seed per sample")
+    resolved_seeds = (
+        list(sample_seeds)
+        if sample_seeds is not None
+        else [prepared.config.run.seed + index for index in range(len(samples))]
+    )
     batch_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "_" + uuid.uuid4().hex[:8]
     batch_dir = Path(output_root) / batch_id
     batch_dir.mkdir(parents=True, exist_ok=False)
     created_at = datetime.now(UTC).isoformat()
     snapshot_builder = getattr(prepared, "batch_config_snapshot", None)
     if callable(snapshot_builder):
+        snapshot_options = {
+            "batch_id": batch_id,
+            "created_at": created_at,
+            "samples": samples,
+            "concurrency": concurrency,
+        }
+        if _accepts_keyword(snapshot_builder, "update_memory"):
+            snapshot_options["update_memory"] = update_memory
+        if _accepts_keyword(snapshot_builder, "retry_policy"):
+            snapshot_options["retry_policy"] = EVALUATION_RETRY_POLICY
         batch_config = snapshot_builder(
-            batch_id=batch_id,
-            created_at=created_at,
-            samples=samples,
-            concurrency=concurrency,
+            **snapshot_options,
         )
     else:
         # Keeps lightweight test doubles and third-party PreparedPipeline-like
@@ -66,10 +84,11 @@ async def run_batch(
                 "created_at": created_at,
                 "concurrency": concurrency,
                 "sample_retries": sample_retries,
+                "update_memory": update_memory,
                 "sample_count": len(samples),
                 "samples": [
-                    {"sample_id": sample.sample_id, "seed": prepared.config.run.seed + index}
-                    for index, sample in enumerate(samples)
+                    {"sample_id": sample.sample_id, "seed": seed}
+                    for sample, seed in zip(samples, resolved_seeds, strict=True)
                 ],
             },
             "pipeline": (
@@ -79,6 +98,12 @@ async def run_batch(
             ),
         }
     batch_config.setdefault("batch", {})["sample_retries"] = sample_retries
+    batch_config["batch"]["retry_policy"] = EVALUATION_RETRY_POLICY
+    batch_config["batch"]["update_memory"] = update_memory
+    batch_config["batch"]["samples"] = [
+        {"sample_id": sample.sample_id, "seed": seed}
+        for sample, seed in zip(samples, resolved_seeds, strict=True)
+    ]
     with (batch_dir / "batch_config.yaml").open("w", encoding="utf-8") as handle:
         yaml.safe_dump(batch_config, handle, allow_unicode=True, sort_keys=False)
     semaphore = asyncio.Semaphore(concurrency)
@@ -88,7 +113,7 @@ async def run_batch(
         try:
             build_options = {
                 "output_dir": batch_dir,
-                "seed": prepared.config.run.seed + index,
+                "seed": resolved_seeds[index],
             }
             if build_accepts_run_id:
                 build_options["run_id"] = run_id
@@ -97,6 +122,8 @@ async def run_batch(
                 episode=built.episode,
                 assistant=built.assistant,
                 audit=built.audit,
+                update_memory=update_memory,
+                stop_before_over_budget_generation=True,
             )
         except Exception as exc:  # noqa: BLE001 - isolate one attempt from the batch
             run_dir = batch_dir / run_id
@@ -156,16 +183,23 @@ async def run_batch(
         "completed_at": datetime.now(UTC).isoformat(),
         "concurrency": concurrency,
         "sample_retries": sample_retries,
+        "retry_policy": EVALUATION_RETRY_POLICY,
+        "update_memory": update_memory,
         "sample_count": len(samples),
         "total_attempts": len(samples) + total_retries,
         "total_retries": total_retries,
         "retried_samples": sum(item.retry_count > 0 for item in executions),
         "completed": sum(item.status == "completed" for item in results),
+        "behavioral_failures": sum(is_turn_limit_failure(item) for item in results),
+        "infrastructure_failures": sum(
+            item.status != "completed" and not is_turn_limit_failure(item) for item in results
+        ),
         "failed": sum(item.status != "completed" for item in results),
         "runs": [
             {
                 "sample_id": execution.result.sample_id,
                 "status": execution.result.status,
+                "outcome": batch_result_outcome(execution.result),
                 "turns": execution.result.turns,
                 "run_dir": str(execution.result.run_dir),
                 "error": execution.result.error,
@@ -180,9 +214,14 @@ async def run_batch(
     )
     lines = [
         f"Batch: {batch_id}",
-        f"Samples: {len(samples)} | Completed: {summary['completed']} | Failed: {summary['failed']}",
         (
-            f"Retry limit: {sample_retries} | Retried samples: {summary['retried_samples']} "
+            f"Samples: {len(samples)} | Completed: {summary['completed']} "
+            f"| Turn-limit failures: {summary['behavioral_failures']} "
+            f"| Infrastructure failures: {summary['infrastructure_failures']}"
+        ),
+        (
+            f"Full-sample retry limit: {sample_retries} | "
+            f"Retried samples: {summary['retried_samples']} "
             f"| Retries used: {total_retries} | Total attempts: {summary['total_attempts']}"
         ),
         "",
@@ -191,8 +230,7 @@ async def run_batch(
         item = execution.result
         lines.append(
             f"[{item.status.upper()}] {item.sample_id} | retries={execution.retry_count} "
-            f"| turns={item.turns} | {item.run_dir}"
-            + (f" | {item.error}" if item.error else "")
+            f"| turns={item.turns} | {item.run_dir}" + (f" | {item.error}" if item.error else "")
         )
     (batch_dir / "batch_summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return batch_dir, results
@@ -201,6 +239,22 @@ async def run_batch(
 def _sample_run_id(sample_id: str, index: int) -> str:
     slug = re.sub(r"[^A-Za-z0-9._-]+", "_", sample_id).strip("._") or "sample"
     return f"{slug[:90]}_{index + 1:04d}"
+
+
+def is_turn_limit_failure(result: RunResult) -> bool:
+    return (
+        result.status != "completed"
+        and isinstance(result.error, str)
+        and result.error.startswith("EpisodeTurnLimitError:")
+    )
+
+
+def batch_result_outcome(result: RunResult) -> str:
+    if result.status == "completed":
+        return "SUCCESS"
+    if is_turn_limit_failure(result):
+        return "FAILURE_TURN_LIMIT"
+    return "INFRASTRUCTURE_FAILURE"
 
 
 def _accepts_keyword(callable_value: object, keyword: str) -> bool:

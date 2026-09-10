@@ -117,6 +117,9 @@ def evaluate(
     console.print(
         f"Evaluated [bold]{len(result.records)}[/bold] episode(s); "
         f"[red]{len(result.failures)} trace error(s)[/red].\n"
+        f"Token counts unavailable for "
+        f"{sum(record.assistant_tokens is None for record in result.records)} episode(s); "
+        "their E/S metrics are retained.\n"
         f"{episode_path}\n{aggregate_path}\n{text_path}"
     )
     has_aitr_errors = any(record.aitr_error is not None for record in result.records)

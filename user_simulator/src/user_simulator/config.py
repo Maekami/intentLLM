@@ -7,10 +7,28 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+class RateLimitRetrySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # This budget is independent of schema and ordinary transport retries: a
+    # 429 means the provider did not execute the generation request.
+    max_attempts: int = Field(default=6, ge=1)
+    rpm_initial_backoff_seconds: float = Field(default=15.0, ge=0.0)
+    tpm_initial_backoff_seconds: float = Field(default=60.0, ge=0.0)
+    generic_initial_backoff_seconds: float = Field(default=30.0, ge=0.0)
+    maximum_backoff_seconds: float = Field(default=60.0, ge=0.0)
+    jitter_ratio: float = Field(default=0.25, ge=0.0, le=1.0)
+    honor_retry_after: bool = True
+
+
 class RetrySettings(BaseModel):
     max_attempts: int = 3
     initial_backoff_seconds: float = 1.0
     maximum_backoff_seconds: float = 8.0
+    # None preserves the legacy behavior where 429s share the ordinary
+    # transport retry budget and backoff. Profiles can opt into a dedicated
+    # provider-aware strategy without changing other models.
+    rate_limit: RateLimitRetrySettings | None = None
 
 
 class LocalChatTemplateSettings(BaseModel):
@@ -60,10 +78,45 @@ class GenerationSettings(BaseModel):
 class StructuredOutputSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # `type` describes the local data contract. `transport` controls the wire
+    # response_format used for endpoints that do not implement native JSON
+    # Schema enforcement but do implement JSON Object mode.
     type: Literal["json_schema"] = "json_schema"
+    transport: Literal["json_schema", "json_object"] = "json_schema"
     strict: Literal[True] = True
     require_parameters: Literal[True] = True
     response_healing: bool = False
+
+
+class OpenRouterRoutingSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Provider priority and allow-list are separate OpenRouter controls. Using
+    # both makes the preferred order explicit and prevents fallback outside the
+    # audited pool.
+    order: list[str] | None = Field(default=None, min_length=1)
+    only: list[str] | None = Field(default=None, min_length=1)
+    quantizations: list[str] | None = Field(default=None, min_length=1)
+    require_parameters: bool = True
+    allow_fallbacks: bool = True
+
+    @model_validator(mode="after")
+    def validate_provider_pool(self) -> Self:
+        for label, values in (
+            ("routing.order", self.order),
+            ("routing.only", self.only),
+            ("routing.quantizations", self.quantizations),
+        ):
+            if values is not None and len(values) != len(set(values)):
+                raise ValueError(f"{label} must not contain duplicate values")
+        if self.order is not None and self.only is not None:
+            outside_pool = [provider for provider in self.order if provider not in self.only]
+            if outside_pool:
+                raise ValueError(
+                    "routing.order must be a subset of routing.only; outside pool: "
+                    + ", ".join(outside_pool)
+                )
+        return self
 
 
 class ModelProfile(BaseModel):
@@ -73,7 +126,7 @@ class ModelProfile(BaseModel):
     provider: Literal["openrouter", "vllm", "openai_compatible"]
     model_id: str
     base_url: str
-    routing: dict[str, bool] = Field(default_factory=dict)
+    routing: OpenRouterRoutingSettings = Field(default_factory=OpenRouterRoutingSettings)
     reasoning: ReasoningSettings
     generation: dict[str, GenerationSettings]
     structured_output: StructuredOutputSettings

@@ -10,7 +10,12 @@ run:
   difficulty: hard
   seed: 42
   concurrency: 4
-  # Additional full-sample attempts after the initial attempt. 0 disables retries.
+  # Additional full-sample attempts for any failed test/evaluation episode,
+  # including turn-limit failures. Evo keeps its independent infrastructure-only policy.
+  # 0 disables retries.
   sample_retries: 3
+  # Test/evaluation switch. true keeps the historical immediate Evo-Memory update
+  # behavior; false retrieves from memory but never writes test episodes back.
+  update_memory: true
   output_dir: runs_batch_qwen
   audit_level: full

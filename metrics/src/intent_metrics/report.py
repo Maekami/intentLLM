@@ -85,6 +85,8 @@ def render_aggregate_text(report: dict[str, Any]) -> str:
                 f"Diagnostics [{difficulty}]: episodes={diagnostics['episode_count']}, "
                 f"exposure_failures={diagnostics['exposure_failures']}, "
                 f"satisfaction_failures={diagnostics['satisfaction_failures']}, "
+                f"token_available_episodes={diagnostics['token_available_episode_count']}, "
+                f"token_missing_episodes={diagnostics['token_missing_episode_count']}, "
                 f"aitr_api_failures={diagnostics['aitr_api_failures']}, "
                 f"aitr_skipped={diagnostics['aitr_skipped']}, "
                 f"warnings={diagnostics['warning_count']}"

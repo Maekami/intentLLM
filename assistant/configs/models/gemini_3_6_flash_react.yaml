@@ -1,0 +1,30 @@
+# Gemini 3.6 Flash minimal-thinking profile for InteractComp ReAct.
+# Gemini requires thinking, so assistant calls match the minimal-thinking
+# ExpRAG/ReMem/Trace2Skill profiles. Guard calls use the unified simulator
+# profile instead of this assistant model.
+profile_name: gemini_3_6_flash_react
+provider: openrouter
+model_id: google/gemini-3.6-flash
+base_url: https://openrouter.ai/api/v1
+
+routing:
+  require_parameters: true
+  allow_fallbacks: true
+
+reasoning:
+  enabled: true
+  effort: minimal
+  exclude_from_response: true
+
+generation:
+  assistant:
+    temperature: null
+    top_p: null
+    max_completion_tokens: 65536
+retry:
+  max_attempts: 3
+  initial_backoff_seconds: 1.0
+  maximum_backoff_seconds: 8.0
+
+memory: null
+skill: null

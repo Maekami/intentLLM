@@ -67,7 +67,7 @@ class EpisodeMetricRecord:
     source_outcome: str
     all_node_exposure_turn: int
     all_node_satisfaction_turn: int
-    assistant_tokens: int
+    assistant_tokens: int | None
     aitr_raw_score: float | None = None
     aitr_normalized_score: float | None = None
     aitr: float | None = None
@@ -78,9 +78,12 @@ class EpisodeMetricRecord:
     aitr_prompt_version: str | None = None
     aitr_prompt_hash: str | None = None
     warnings: tuple[str, ...] = ()
+    token_error: str | None = None
 
     @property
     def status(self) -> str:
+        if self.assistant_tokens is None:
+            return "tokens_incomplete"
         if self.aitr_error:
             return "aitr_error"
         if self.aitr is None:

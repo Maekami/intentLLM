@@ -1,0 +1,33 @@
+# GPT-5.6 Luna non-thinking profile with a model-bound Trace2Skill.
+# Model, reasoning, generation, and retry settings are identical to the GPT
+# ExpRAG/ReMem experiment profiles; only the agent method differs.
+profile_name: gpt_5_6_luna_trace2skill
+provider: openrouter
+model_id: openai/gpt-5.6-luna
+base_url: https://openrouter.ai/api/v1
+
+routing:
+  require_parameters: true
+  allow_fallbacks: true
+
+reasoning:
+  enabled: false
+  effort: none
+  exclude_from_response: true
+
+generation:
+  assistant:
+    temperature: null
+    max_completion_tokens: 32768
+
+retry:
+  max_attempts: 3
+  initial_backoff_seconds: 1.0
+  maximum_backoff_seconds: 8.0
+
+memory: null
+skill:
+  framework: trace2skill
+  # Relative to this model-profile YAML. A canonical 1,000-sample run publishes
+  # here atomically; --limit trial runs never modify this path.
+  path: ../../runs/skills/gpt_5_6_luna_trace2skill/SKILL.md

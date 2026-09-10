@@ -1,0 +1,56 @@
+# GPT-5.6 Luna non-thinking profile with Evo-Memory ExpRAG enabled.
+profile_name: gpt_5_6_luna_exprag
+provider: openrouter
+model_id: openai/gpt-5.6-luna
+base_url: https://openrouter.ai/api/v1
+
+routing:
+  # Keep these request settings aligned with gpt_5_6_luna_non_thinking.yaml.
+  require_parameters: true
+  allow_fallbacks: true
+
+reasoning:
+  # OpenRouter receives reasoning={"effort": "none"}.
+  enabled: false
+  effort: none
+  exclude_from_response: true
+
+generation:
+  assistant:
+    temperature: null
+    max_completion_tokens: 32768
+
+retry:
+  max_attempts: 3
+  initial_backoff_seconds: 1.0
+  maximum_backoff_seconds: 8.0
+
+memory:
+  # FIXED FOR THIS PROFILE: ExpRAG.
+  framework: exprag
+  # Each of the six evo conditions must use a distinct persistent memory file.
+  path: ../../runs/memory/gpt_5_6_luna_exprag.json
+  # Above 1100 and the current 1000-sample dev set, with seed-memory headroom.
+  max_entries: 2000
+  prune_oldest_when_full: true
+  store_successful_only: true
+  retrieval:
+    # OFFICIAL EVO-MEMORY ALIGNMENT: BGE embedding retrieval.
+    backend: sentence_transformers
+    top_k: 4
+    min_score: 0.0
+    # Bound the visible, latest-first per-turn retrieval query.
+    query_max_characters: 2048
+    embedding_model: BAAI/bge-base-en-v1.5
+    # Six tmux processes otherwise each auto-load a separate BGE copy on CUDA.
+    device: cpu
+    bm25_k1: 1.5
+    bm25_b: 0.75
+  context:
+    include_trajectory: true
+    include_feedback: true
+    max_characters: 8000
+  # Parsed for the shared memory schema but unused by ExpRAG.
+  remem:
+    max_iterations: 10
+    enable_pruning: true

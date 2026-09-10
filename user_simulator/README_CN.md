@@ -72,6 +72,17 @@ OPENROUTER_APP_TITLE=Reason-DAG User Simulator
 `deepseek_v4_flash_0731`，实际 OpenRouter 模型 ID 为
 `deepseek/deepseek-v4-flash-0731`：
 
+该 profile 优先使用 Baidu，并按 `Baidu → SiliconFlow → NextBit → DeepInfra` 回退。
+`only` 将 endpoint 限制在这四个已审核 provider 内，`quantizations: [fp8]` 保持量化一致，
+`require_parameters: true` 会继续过滤不支持当前 reasoning 与 strict JSON Schema 参数的
+endpoint，`allow_fallbacks: true` 允许 OpenRouter 在前序 provider 故障或限流后尝试下一项。
+
+该 profile 还为 OpenRouter/provider 池耗尽后的 429 配置了独立重试预算。RPM 限流从 15 秒开始
+指数退避，TPM 限流从 60 秒开始，无法识别类型的 429 从 30 秒开始，最大基础等待均为
+60 秒；如果响应包含 `Retry-After`，则以它作为最低等待时间。每次等待额外加入最多 25%
+随机抖动，避免 mini-batch 内的并发请求同时再次撞限。429 不消耗普通传输错误或结构化
+输出的四次尝试预算；详细参数均可在对应模型 YAML 的 `retry.rate_limit` 下调整。
+
 ```bash
 python -m user_simulator.cli.demo \
   --random-sample \
@@ -79,6 +90,25 @@ python -m user_simulator.cli.demo \
   --seed 42 \
   --audit-level full
 ```
+
+如果需要保持同一模型版本和生成参数，但将所有请求严格锁定到 DeepSeek 官方 provider，
+使用独立 profile `deepseek_v4_flash_0731_official`：
+
+```bash
+python -m user_simulator.cli.demo \
+  --random-sample \
+  --difficulty medium \
+  --seed 42 \
+  --model-profile deepseek_v4_flash_0731_official \
+  --audit-level full
+```
+
+该 profile 的 `order` 和 `only` 均为 `[deepseek]`，并关闭 provider fallback。它有意不设置
+`quantizations`：OpenRouter 当前将官方 endpoint 的量化标记为 `unknown`，添加 FP8 过滤会
+导致该 endpoint 被排除。官方 endpoint 只声明支持 JSON Object，不声明原生 JSON Schema
+enforcement，因此该 profile 使用 `transport: json_object`。客户端会把完整 Schema 加入系统
+指令，响应仍必须通过同一个 strict Pydantic 校验，失败时进入原有结构化重试。原有
+Baidu-first fallback profile 继续使用 provider 原生 `json_schema`，不受影响。
 
 ### 通过 OpenRouter 使用 GPT-5.6 Luna
 
@@ -307,6 +337,7 @@ pytest -q
 模型 YAML 已用英文注释标出 `ADJUSTABLE`、`FIXED` 和推荐范围：
 
 - `configs/models/deepseek_v4_flash_0731.yaml`
+- `configs/models/deepseek_v4_flash_0731_official.yaml`
 - `configs/models/deepseek_v4_pro.yaml`
 - `configs/models/gpt_5_6_luna.yaml`
 - `configs/models/qwen_3_8_27b_vllm.yaml`
@@ -317,8 +348,12 @@ clear realizer 和 abstract realizer 可以使用不同的 reasoning 强度。�
 启用时通过同一块中的 `effort` 调整强度。顶层 `reasoning` 仅作为兼容旧 profile 的默认
 回退值，组件级配置优先。各 profile 的实际组件设置以对应 YAML 为准；新增的本地 Qwen3.8
 profile 将 controller 和 satisfaction 设置为 `low`，两个 realizer 关闭 reasoning。也可以
-独立调整各组件的输出 token 上限、回退开关和重试参数。
-严格结构化输出相关的 `type`、`strict`、`require_parameters` 不应修改。
+独立调整各组件的输出 token 上限、回退开关和重试参数。`retry.rate_limit` 是可选配置；
+启用后会独立处理 RPM/TPM 429，并在审计 metadata 中记录
+`rate_limit_retry_count`、`rate_limit_wait_seconds` 和 `last_rate_limit_type`。
+严格结构化输出相关的 `type`、`strict`、`require_parameters` 不应修改。`transport` 默认是
+provider 原生 `json_schema`；只有不提供原生 Schema enforcement 的 DeepSeek 官方 profile
+使用 `json_object` 传输，并保留完整 Schema 指令、严格本地验证及结构化重试。
 DeepSeek 支持调整 `temperature`；Luna 当前在 OpenRouter 上不公开该参数，
 因此其配置必须保持 `temperature: null`，客户端会完全省略该请求字段。
 

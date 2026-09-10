@@ -1,0 +1,28 @@
+# GPT-5.6 Luna non-thinking profile for InteractComp ReAct.
+# Assistant request settings match the GPT ExpRAG/ReMem/Trace2Skill profiles.
+# The guard is injected separately from the unified simulator profile.
+profile_name: gpt_5_6_luna_react
+provider: openrouter
+model_id: openai/gpt-5.6-luna
+base_url: https://openrouter.ai/api/v1
+
+routing:
+  require_parameters: true
+  allow_fallbacks: true
+
+reasoning:
+  enabled: false
+  effort: none
+  exclude_from_response: true
+
+generation:
+  assistant:
+    temperature: null
+    max_completion_tokens: 32768
+retry:
+  max_attempts: 3
+  initial_backoff_seconds: 1.0
+  maximum_backoff_seconds: 8.0
+
+memory: null
+skill: null

@@ -1,0 +1,118 @@
+# This profile is an isolated alternative to deepseek_v4_flash_0731. It pins
+# the same model revision and generation settings, but routes every request to
+# DeepSeek's official OpenRouter endpoint instead of Baidu.
+profile_name: deepseek_v4_flash_0731_official
+provider: openrouter
+model_id: deepseek/deepseek-v4-flash-0731
+base_url: https://openrouter.ai/api/v1
+
+routing:
+  # Pin every request to DeepSeek's official endpoint. `only` is the hard
+  # allow-list and disabling fallbacks prevents OpenRouter from selecting a
+  # third-party deployment after an official-provider error or rate limit.
+  order:
+    - deepseek
+  only:
+    - deepseek
+  # Intentionally omit `quantizations`: OpenRouter currently labels the
+  # official endpoint's quantization as unknown, so an FP8 filter would exclude
+  # the endpoint this profile is designed to select.
+  # FIXED: keep true so OpenRouter verifies the official endpoint supports all
+  # wire parameters used here, especially reasoning and JSON Object formatting.
+  require_parameters: true
+  allow_fallbacks: false
+
+reasoning:
+  # BACKWARD-COMPATIBLE FALLBACK: used only when a generation entry omits its
+  # component-level reasoning block.
+  enabled: true
+  effort: low
+  exclude_from_response: true
+
+generation:
+  controller:
+    # ADJUSTABLE: 0.0-2.0; 0.0-0.3 is recommended for stable structured output.
+    temperature: 0.0
+    # ADJUSTABLE: positive integer up to the active endpoint's output limit;
+    # 256-8192 is the practical range for this simulator.
+    max_completion_tokens: 16384
+    reasoning:
+      # ADJUSTABLE: true | false. When enabled, effort supports low | high | max.
+      enabled: true
+      effort: low
+      exclude_from_response: true
+  satisfaction:
+    # ADJUSTABLE: 0.0-2.0; 0.0-0.3 is recommended for stable structured output.
+    temperature: 0.0
+    # ADJUSTABLE: positive integer up to the active endpoint's output limit;
+    # 256-8192 is the practical range for this simulator.
+    max_completion_tokens: 16384
+    reasoning:
+      # ADJUSTABLE: true | false. Disabled calls omit effort and exclusion.
+      enabled: true
+      effort: low
+      exclude_from_response: true
+  realizer_clear:
+    # ADJUSTABLE: 0.0-2.0; 0.0-0.7 is recommended for concise natural wording.
+    temperature: 0.0
+    # ADJUSTABLE: positive integer up to the active endpoint's output limit;
+    # 128-4096 is the practical range for short user messages.
+    max_completion_tokens: 16384
+    reasoning:
+      # ADJUSTABLE: true | false. Disabled calls omit effort and exclusion.
+      enabled: true
+      effort: low
+      exclude_from_response: true
+  realizer_abstract:
+    # ADJUSTABLE: 0.0-2.0; 0.0-0.7 is recommended for concise natural wording.
+    temperature: 0.0
+    # ADJUSTABLE: positive integer up to the active endpoint's output limit;
+    # 128-4096 is the practical range for short user messages.
+    max_completion_tokens: 16384
+    reasoning:
+      # ADJUSTABLE: true | false. Disabled calls omit effort and exclusion.
+      enabled: true
+      effort: low
+      exclude_from_response: true
+
+structured_output:
+  # The local contract remains strict JSON Schema. DeepSeek's official endpoint
+  # supports response_format=json_object but does not advertise native
+  # structured_outputs/JSON-Schema enforcement, so only this profile uses the
+  # JSON Object wire transport. The client injects the complete schema into the
+  # system instruction and strictly validates every response locally.
+  type: json_schema
+  transport: json_object
+  strict: true
+  require_parameters: true
+  # RECOMMENDED FOR THIS MODEL: true | false. OpenRouter's response-healing
+  # plugin repairs malformed JSON syntax and Markdown wrappers before local
+  # schema validation. It does not replace semantic validation or retries.
+  response_healing: true
+
+retry:
+  # ADJUSTABLE: integer >= 1; 1-5 is recommended. Four attempts give this
+  # profile one additional recovery chance for schema/semantic contract errors.
+  max_attempts: 4
+  # ADJUSTABLE: seconds >= 0; 0.1-10.0 is recommended.
+  initial_backoff_seconds: 1.0
+  # ADJUSTABLE: seconds >= initial_backoff_seconds; 1.0-60.0 is recommended.
+  maximum_backoff_seconds: 8.0
+  # OpenRouter/DeepSeek 429 handling. This budget is separate from the four
+  # ordinary transport/schema attempts above, because rate-limited requests do
+  # not reach model generation. Retry-After is used as a lower bound whenever
+  # OpenRouter returns it.
+  rate_limit:
+    # Total 429 responses allowed for one logical LLM call, including the first.
+    max_attempts: 6
+    # Use progressively longer waits when OpenRouter identifies an RPM limit.
+    rpm_initial_backoff_seconds: 15.0
+    # TPM exhaustion normally requires waiting for the minute window to renew.
+    tpm_initial_backoff_seconds: 60.0
+    # Used when an upstream 429 does not identify RPM versus TPM.
+    generic_initial_backoff_seconds: 30.0
+    maximum_backoff_seconds: 60.0
+    # Randomly add up to 25% so concurrent samples do not retry simultaneously.
+    # This changes scheduling only, not prompts or generation parameters.
+    jitter_ratio: 0.25
+    honor_retry_after: true

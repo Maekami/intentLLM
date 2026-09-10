@@ -6,11 +6,26 @@ model_id: deepseek/deepseek-v4-flash-0731
 base_url: https://openrouter.ai/api/v1
 
 routing:
+  # Prefer Baidu, then use only the three previously audited FP8 fallbacks.
+  # `order` fixes priority and `only` prevents any unaudited deployment from
+  # entering the pool.
+  order:
+    - baidu
+    - siliconflow
+    - nextbit
+    - deepinfra
+  only:
+    - baidu
+    - siliconflow
+    - nextbit
+    - deepinfra
+  # Keep every provider in the audited pool on an FP8 deployment.
+  quantizations:
+    - fp8
   # FIXED: keep true so OpenRouter only selects endpoints supporting every
   # requested parameter, especially strict JSON Schema response formatting.
   require_parameters: true
-  # ADJUSTABLE: true | false. True improves availability by trying another
-  # compatible endpoint; false prevents provider fallback.
+  # Try the next ordered provider when Baidu or a prior fallback is unavailable.
   allow_fallbacks: true
 
 reasoning:
@@ -85,3 +100,21 @@ retry:
   initial_backoff_seconds: 1.0
   # ADJUSTABLE: seconds >= initial_backoff_seconds; 1.0-60.0 is recommended.
   maximum_backoff_seconds: 8.0
+  # OpenRouter/provider-pool 429 handling. OpenRouter first exhausts the ordered
+  # provider fallbacks; this separate retry budget applies if the whole pool
+  # still returns a rate limit. It does not consume the four ordinary
+  # transport/schema attempts above. Retry-After is used as a lower bound.
+  rate_limit:
+    # Total 429 responses allowed for one logical LLM call, including the first.
+    max_attempts: 6
+    # RPM windows benefit from progressively waiting 15, 30, then 60 seconds.
+    rpm_initial_backoff_seconds: 15.0
+    # TPM exhaustion normally requires waiting for the minute window to renew.
+    tpm_initial_backoff_seconds: 60.0
+    # Used when an upstream 429 does not identify RPM versus TPM.
+    generic_initial_backoff_seconds: 30.0
+    maximum_backoff_seconds: 60.0
+    # Randomly add up to 25% so the eight concurrent samples do not retry at
+    # exactly the same instant. This changes scheduling only, not prompts.
+    jitter_ratio: 0.25
+    honor_retry_after: true

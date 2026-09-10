@@ -17,7 +17,7 @@ from assistant.memory.context import (
     build_remem_context,
     replace_latest_user_content,
 )
-from assistant.memory.models import MemoryEntry, RetrievalResult
+from assistant.memory.models import MemoryEntry, PreparedMemoryUpdate, RetrievalResult
 from assistant.memory.retrieval import MemoryRetriever
 from assistant.memory.store import JsonMemoryStore
 from assistant.session import AssistantSession
@@ -37,6 +37,7 @@ class EvolvingMemorySession(AssistantSession):
         settings: MemorySettings,
         store: JsonMemoryStore,
         retriever: MemoryRetriever,
+        memory_snapshot: Sequence[MemoryEntry] | None = None,
     ) -> None:
         super().__init__(client, generation, baseline)
         if settings.framework != self.framework:
@@ -47,8 +48,11 @@ class EvolvingMemorySession(AssistantSession):
         self.memory_settings = settings
         self.memory_store = store
         self.retriever = retriever
+        self._memory_snapshot = tuple(memory_snapshot) if memory_snapshot is not None else None
+        self._episode_memory_snapshot: tuple[MemoryEntry, ...] | None = self._memory_snapshot
         self._retrieved: list[RetrievalResult] = []
         self._task_input: str | None = None
+        self._last_retrieval_query = ""
         self._task_finalized = False
         self._last_memory_call_metadata: dict[str, Any] = {}
 
@@ -67,14 +71,26 @@ class EvolvingMemorySession(AssistantSession):
         return super().last_call_metadata
 
     def _begin_task(self, query: str) -> None:
-        if self._task_input is not None:
-            return
-        self._task_input = query
-        entries = self.memory_store.entries()
+        if self._task_input is None:
+            self._task_input = query
+        if self._episode_memory_snapshot is None:
+            # Freeze the bank for the whole episode. Evolution runs provide an
+            # explicit mini-batch snapshot; ordinary sessions lazily freeze the
+            # store as it exists when the episode begins.
+            self._episode_memory_snapshot = tuple(self.memory_store.entries())
+
+    def _retrieve_for_turn(self, pending_history: Sequence[ChatMessage]) -> None:
+        if self._episode_memory_snapshot is None:
+            raise RuntimeError("memory bank was not initialized for the current task")
         retrieval = self.memory_settings.retrieval
+        query = _build_retrieval_query(
+            pending_history,
+            maximum=retrieval.query_max_characters,
+        )
+        self._last_retrieval_query = query
         self._retrieved = self.retriever.retrieve(
             query,
-            entries,
+            list(self._episode_memory_snapshot),
             top_k=retrieval.top_k,
             min_score=retrieval.min_score,
         )
@@ -86,7 +102,34 @@ class EvolvingMemorySession(AssistantSession):
             )
         self._begin_task(user_message)
         pending_user = ChatMessage(role="user", content=user_message)
-        return pending_user, [*self._history, pending_user]
+        pending_history = [*self._history, pending_user]
+        self._retrieve_for_turn(pending_history)
+        return pending_user, pending_history
+
+    def _retrieval_metadata(
+        self,
+        retrieved: Sequence[RetrievalResult] | None = None,
+    ) -> dict[str, Any]:
+        results = list(self._retrieved if retrieved is None else retrieved)
+        query = self._last_retrieval_query
+        return {
+            "memory_framework": self.framework,
+            "memory_retrieval_backend": self.memory_settings.retrieval.backend,
+            "memory_retrieval_scope": "per_turn",
+            "memory_bank_scope": "frozen_episode_snapshot",
+            "memory_bank_snapshot_source": (
+                "provided_snapshot"
+                if self._memory_snapshot is not None
+                else "store_at_episode_start"
+            ),
+            "memory_bank_entry_count": len(self._episode_memory_snapshot or ()),
+            "memory_retrieval_query_strategy": "visible_user_turns_latest_first",
+            "memory_retrieval_query_character_count": len(query),
+            "memory_retrieval_query_sha256": hashlib.sha256(query.encode()).hexdigest(),
+            "memory_retrieved_count": len(results),
+            "memory_retrieved_task_ids": [result.entry.task_id for result in results],
+            "memory_retrieval_scores": [result.score for result in results],
+        }
 
     def _commit(
         self,
@@ -121,25 +164,49 @@ class EvolvingMemorySession(AssistantSession):
         success: bool,
         feedback: str | None = None,
     ) -> dict[str, Any]:
-        """Evolve memory once after an externally evaluated episode ends."""
+        """Evolve memory immediately after an externally evaluated episode ends."""
+
+        prepared = self.prepare_memory_update(
+            task_id=task_id,
+            success=success,
+            feedback=feedback,
+        )
+        if prepared.entry is None:
+            return self.memory_store.skipped(
+                task_id=prepared.task_id,
+                reason=prepared.reason,
+            ).to_dict()
+        return self.memory_store.upsert(prepared.entry).to_dict()
+
+    def prepare_memory_update(
+        self,
+        *,
+        task_id: str | None = None,
+        success: bool,
+        feedback: str | None = None,
+    ) -> PreparedMemoryUpdate:
+        """Finalize one episode without persisting it, for mini-batch evolution."""
 
         if self._task_finalized:
-            return self.memory_store.skipped(
+            return PreparedMemoryUpdate(
                 task_id=task_id,
                 reason="task_already_finalized",
-            ).to_dict()
+                entry=None,
+            )
         self._task_finalized = True
         if not self._history:
-            return self.memory_store.skipped(
+            return PreparedMemoryUpdate(
                 task_id=task_id,
                 reason="no_completed_assistant_turn",
-            ).to_dict()
+                entry=None,
+            )
         resolved_task_id = task_id or _content_task_id(self._history)
         if self.memory_settings.store_successful_only and not success:
-            return self.memory_store.skipped(
+            return PreparedMemoryUpdate(
                 task_id=resolved_task_id,
                 reason="unsuccessful_task_not_stored",
-            ).to_dict()
+                entry=None,
+            )
         entry = MemoryEntry(
             task_id=resolved_task_id,
             input_text=self._task_input or _first_user_content(self._history),
@@ -157,23 +224,29 @@ class EvolvingMemorySession(AssistantSession):
             },
             is_successful=success,
         )
-        return self.memory_store.upsert(entry).to_dict()
+        return PreparedMemoryUpdate(
+            task_id=resolved_task_id,
+            entry=entry,
+            reason="ready_for_batch_commit",
+        )
 
     def replace_history(self, messages: Sequence[ChatMessage]) -> None:
         super().replace_history(messages)
         self._task_input = _first_user_content(self._history) if self._history else None
+        self._episode_memory_snapshot = self._memory_snapshot
         self._retrieved = []
+        self._last_retrieval_query = ""
         self._task_finalized = False
         self._last_memory_call_metadata = {}
         if self._task_input is not None:
-            query = self._task_input
-            self._task_input = None
-            self._begin_task(query)
+            self._begin_task(self._task_input)
 
     def reset(self) -> None:
         super().reset()
+        self._episode_memory_snapshot = self._memory_snapshot
         self._retrieved = []
         self._task_input = None
+        self._last_retrieval_query = ""
         self._task_finalized = False
         self._last_memory_call_metadata = {}
 
@@ -202,13 +275,7 @@ class ExpRAGSession(EvolvingMemorySession):
         return self._commit(pending_user, generated)
 
     def _memory_metadata(self) -> dict[str, Any]:
-        return {
-            "memory_framework": self.framework,
-            "memory_retrieval_backend": self.memory_settings.retrieval.backend,
-            "memory_retrieved_count": len(self._retrieved),
-            "memory_retrieved_task_ids": [result.entry.task_id for result in self._retrieved],
-            "memory_retrieval_scores": [result.score for result in self._retrieved],
-        }
+        return self._retrieval_metadata()
 
 
 class ReMemSession(EvolvingMemorySession):
@@ -218,6 +285,7 @@ class ReMemSession(EvolvingMemorySession):
 
     async def respond(self, user_message: str) -> str:
         pending_user, pending_history = self._prepare_turn(user_message)
+        initially_retrieved = tuple(self._retrieved)
         self._last_memory_call_metadata = {}
         reasoning_trace: list[str] = []
         actions: list[str] = []
@@ -261,12 +329,20 @@ class ReMemSession(EvolvingMemorySession):
         if visible_content is None:
             visible_content = _extract_answer(last_generated.content)
         aggregate = _aggregate_metadata(call_metadata, actions)
+        aggregate.update(self._retrieval_metadata(initially_retrieved))
+        retained_task_ids = [result.entry.task_id for result in self._retrieved]
+        retained_id_set = set(retained_task_ids)
         aggregate.update(
             {
-                "memory_framework": self.framework,
-                "memory_retrieval_backend": self.memory_settings.retrieval.backend,
-                "memory_retrieved_count": len(self._retrieved),
-                "memory_retrieved_task_ids": [result.entry.task_id for result in self._retrieved],
+                "memory_retained_count": len(self._retrieved),
+                "memory_retained_task_ids": retained_task_ids,
+                "memory_retained_scores": [result.score for result in self._retrieved],
+                "memory_pruned_count": len(initially_retrieved) - len(self._retrieved),
+                "memory_pruned_task_ids": [
+                    result.entry.task_id
+                    for result in initially_retrieved
+                    if result.entry.task_id not in retained_id_set
+                ],
             }
         )
         self._record_metadata(aggregate)
@@ -288,14 +364,26 @@ class ReMemSession(EvolvingMemorySession):
 
 def _parse_remem_action(response: str) -> tuple[str, str]:
     value = response.strip()
-    patterns = (
-        ("refine", r"Think-Prune:\s*(.+)"),
-        ("think", r"Think:\s*(.+)"),
-        ("act", r"Final Answer:\s*(.+)"),
-        ("act", r"Action:\s*(.+)"),
+    # Gemini may copy the Markdown list marker used to describe an operation.
+    # Normalize only a marker directly preceding a known ReMem control label so
+    # ordinary user-visible answers that begin with a list remain untouched.
+    value = re.sub(
+        r"^[-*+]\s+(?=(?:Think-Prune|Think|Final Answer|Action)\s*:)",
+        "",
+        value,
+        count=1,
+        flags=re.IGNORECASE,
     )
-    for action, pattern in patterns:
-        match = re.match(pattern, value, re.IGNORECASE | re.DOTALL)
+    patterns = (
+        # Match only the prune payload's line, as in the official ReMem parser.
+        # Otherwise a following Final Answer block is swallowed into the ID list.
+        ("refine", r"Think-Prune:[^\S\r\n]*([^\r\n]+)", re.IGNORECASE),
+        ("think", r"Think:\s*(.+)", re.IGNORECASE | re.DOTALL),
+        ("act", r"Final Answer:\s*(.+)", re.IGNORECASE | re.DOTALL),
+        ("act", r"Action:\s*(.+)", re.IGNORECASE | re.DOTALL),
+    )
+    for action, pattern, flags in patterns:
+        match = re.match(pattern, value, flags)
         if match:
             return action, match.group(1).strip()
     return "act", value
@@ -378,6 +466,36 @@ def _sum_numbers(calls: list[dict[str, Any]], key: str) -> float:
         for call in calls
         if isinstance((value := call.get(key)), (int, float)) and not isinstance(value, bool)
     )
+
+
+def _build_retrieval_query(
+    messages: Sequence[ChatMessage],
+    *,
+    maximum: int,
+) -> str:
+    """Build a no-leakage query from user-visible intent accumulated so far.
+
+    The latest request is placed first so embedding-model truncation cannot
+    discard the newest constraint. Earlier user turns provide disambiguating
+    context without echoing long assistant answers into the retrieval query.
+    """
+
+    user_turns = [
+        message.content.strip()
+        for message in messages
+        if message.role == "user" and message.content.strip()
+    ]
+    if not user_turns:
+        return ""
+    if len(user_turns) == 1:
+        return user_turns[0][:maximum]
+    query = (
+        "CURRENT USER REQUEST:\n"
+        + user_turns[-1]
+        + "\n\nEARLIER USER CONTEXT (MOST RECENT FIRST):\n"
+        + "\n\n".join(reversed(user_turns[:-1]))
+    )
+    return query[:maximum]
 
 
 def _first_user_content(messages: Sequence[ChatMessage]) -> str:

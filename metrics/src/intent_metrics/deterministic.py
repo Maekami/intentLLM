@@ -85,7 +85,7 @@ def compute_dag_turn_metrics(trace: EpisodeTrace) -> DagTurnMetrics:
 
 
 def compute_assistant_tokens(trace: EpisodeTrace) -> TokenMetric:
-    """Sum output tokens for assistant responses accepted as evaluation turns."""
+    """Sum delivered-text counts when available, preserving legacy usage otherwise."""
 
     accepted_turns = _accepted_turns(trace)
     completed: dict[int, dict[str, Any]] = {}
@@ -112,6 +112,12 @@ def compute_assistant_tokens(trace: EpisodeTrace) -> TokenMetric:
         llm_call = payload.get("llm_call") if isinstance(payload, dict) else None
         if not isinstance(llm_call, dict):
             raise MetricDataError(f"turn {turn}: assistant llm_call metadata is missing")
+        if "visible_response_tokens" in llm_call:
+            visible_tokens = _nonnegative_int(llm_call["visible_response_tokens"])
+            if visible_tokens is None:
+                raise MetricDataError(f"turn {turn}: visible tokens unknown; recount delivered text")
+            total += visible_tokens
+            continue
         output_tokens = _nonnegative_int(llm_call.get("output_tokens"))
         if output_tokens is not None:
             total += output_tokens

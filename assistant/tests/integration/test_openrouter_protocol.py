@@ -76,6 +76,28 @@ def client_with(profile_name: str, responses: list):
     return OpenRouterChatClient(profile, client=sdk), completions, profile
 
 
+async def test_gp_schema_is_transmitted_but_generator_remains_unconstrained():
+    profile = load_model_profile("qwen_3_6_27b_gp")
+    completions = FakeCompletions([response(), response()])
+    client = OpenAICompatibleChatClient(
+        profile, client=SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    )
+    schema = {"type": "object", "properties": {"version": {"const": 3}}, "required": ["version"], "additionalProperties": False}
+    await client.generate(
+        messages=[{"role": "user", "content": "Extract state"}],
+        generation=profile.generation["tracker"], response_schema=schema,
+    )
+    await client.generate(
+        messages=[{"role": "user", "content": "Write reply"}],
+        generation=profile.generation["assistant"],
+    )
+    assert completions.calls[0]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "goal_progression_output", "strict": True, "schema": schema},
+    }
+    assert "response_format" not in completions.calls[1]
+
+
 async def test_luna_request_omits_temperature_and_sends_reasoning() -> None:
     client, completions, profile = client_with("gpt_5_6_luna", [response()])
     result = await client.generate(
@@ -90,7 +112,7 @@ async def test_luna_request_omits_temperature_and_sends_reasoning() -> None:
     assert request["extra_body"]["provider"]["require_parameters"] is True
     assert request["extra_body"]["reasoning"] == {
         "enabled": True,
-        "effort": "max",
+        "effort": "high",
         "exclude": True,
     }
 
@@ -114,6 +136,39 @@ async def test_luna_non_thinking_uses_explicit_none_effort() -> None:
         "allow_fallbacks": True,
     }
     assert request["extra_body"]["reasoning"] == {"effort": "none"}
+
+
+@pytest.mark.parametrize(
+    ("profile_name", "effort"),
+    [
+        ("gemini_3_6_flash", "high"),
+        ("gemini_3_6_flash_non_thinking", "minimal"),
+    ],
+)
+async def test_gemini_profiles_send_mandatory_thinking_effort(
+    profile_name: str,
+    effort: str,
+) -> None:
+    client, completions, profile = client_with(profile_name, [response()])
+    await client.generate(
+        messages=[{"role": "user", "content": "hello"}],
+        generation=profile.generation["assistant"],
+    )
+
+    request = completions.calls[0]
+    assert request["model"] == "google/gemini-3.6-flash"
+    assert request["max_tokens"] == 65536
+    assert "temperature" not in request
+    assert "top_p" not in request
+    assert request["extra_body"]["provider"] == {
+        "require_parameters": True,
+        "allow_fallbacks": True,
+    }
+    assert request["extra_body"]["reasoning"] == {
+        "enabled": True,
+        "effort": effort,
+        "exclude": True,
+    }
 
 
 async def test_usage_records_thinking_and_answer_tokens_without_reasoning_text() -> None:
@@ -148,6 +203,8 @@ async def test_usage_keeps_token_breakdown_unknown_when_provider_omits_it() -> N
 
 async def test_deepseek_v4_flash_request_uses_pinned_model_and_high_reasoning() -> None:
     client, completions, profile = client_with("deepseek_v4_flash_0731", [response()])
+    # Exercise the enabled path explicitly; the shipped profile now disables it.
+    profile.reasoning.enabled = True
     await client.generate(
         messages=[{"role": "user", "content": "hello"}],
         generation=profile.generation["assistant"],
@@ -314,3 +371,156 @@ async def test_invalid_text_responses_exhaust_retries(bad_response) -> None:
             generation=profile.generation["assistant"],
         )
     assert len(completions.calls) == 2
+
+
+async def test_gp_transport_attempts_are_bound_to_response_and_fatal_errors_do_not_retry():
+    import httpx
+    from openai import APIConnectionError, AuthenticationError
+
+    from assistant.exceptions import ConfigurationError
+
+    class Scripted:
+        def __init__(self, values):
+            self.values = values
+            self.calls = 0
+
+        async def create(self, **kwargs):
+            self.calls += 1
+            value = self.values.pop(0)
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+    request = httpx.Request("POST", "http://fixture.invalid/v1/chat/completions")
+    transport = Scripted([APIConnectionError(request=request), response()])
+    profile = load_model_profile(
+        "qwen_3_6_27b_gp",
+        overrides={
+            "retry": {
+                "max_attempts": 2,
+                "initial_backoff_seconds": 0,
+                "maximum_backoff_seconds": 0,
+            }
+        },
+    )
+    client = OpenAICompatibleChatClient(
+        profile, client=SimpleNamespace(chat=SimpleNamespace(completions=transport))
+    )
+    result = await client.generate(
+        messages=[{"role": "user", "content": "hello"}], generation=profile.generation["tracker"]
+    )
+    assert result.metadata["transport_retry_count"] == 1
+    assert [a["status"] for a in result.metadata["transport_attempts"]] == ["failed", "success"]
+    assert result.metadata["transport_attempts"][0]["usage_status"] == "unknown"
+    transport.values = [
+        AuthenticationError(
+            "unauthorized", response=httpx.Response(401, request=request), body=None
+        )
+    ]
+    with pytest.raises(ConfigurationError) as caught:
+        await client.generate(
+            messages=[{"role": "user", "content": "hello"}],
+            generation=profile.generation["tracker"],
+        )
+    assert caught.value.call_metadata["transport_attempts"][0]["http_status"] == 401
+    assert transport.calls == 3
+
+
+@pytest.mark.parametrize("nested", [False, True])
+async def test_gp_bad_request_preserves_server_message_in_error_and_audit(nested):
+    from unittest.mock import AsyncMock
+
+    import httpx
+    from openai import BadRequestError
+
+    from assistant.exceptions import ConfigurationError
+    from assistant.goal_progression.session import public_usage
+
+    detail = "System message must be at the beginning."
+    body = {"message": detail, "type": "BadRequestError"}
+    if nested:
+        body = {"error": body}
+    request = httpx.Request("POST", "http://fixture.invalid/v1/chat/completions")
+    create = AsyncMock(
+        side_effect=BadRequestError(
+            "bad request", response=httpx.Response(400, request=request), body=body
+        )
+    )
+    profile = load_model_profile("qwen_3_6_27b_gp")
+    client = OpenAICompatibleChatClient(
+        profile,
+        client=SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))),
+    )
+    with pytest.raises(ConfigurationError, match="HTTP 400") as caught:
+        await client.generate(
+            messages=[{"role": "user", "content": "hello"}],
+            generation=profile.generation["tracker"],
+        )
+    assert detail in str(caught.value)
+    attempt = public_usage(caught.value.call_metadata)["transport_attempts"][0]
+    assert attempt["http_status"] == 400
+    assert attempt["error_message"] == detail
+    assert create.await_count == 1
+
+
+async def test_visible_tokenizer_counts_only_supplied_text_without_special_tokens(monkeypatch):
+    import httpx
+
+    from assistant.exceptions import ModelRequestError
+
+    requests = []
+
+    def handler(request):
+        import json
+
+        requests.append((str(request.url), json.loads(request.content)))
+        return httpx.Response(200, json={"count": 7})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        client_module.httpx,
+        "AsyncClient",
+        lambda **kwargs: original(**kwargs, transport=httpx.MockTransport(handler)),
+    )
+    profile = load_model_profile("qwen_3_6_27b_gp")
+    client = OpenAICompatibleChatClient(profile, client=SimpleNamespace())
+    result = await client.count_visible_tokens("the delivered text")
+    assert result["visible_response_tokens"] == 7
+    assert requests == [
+        (
+            "http://127.0.0.1:8001/tokenize",
+            {
+                "model": "qwen3.6-27b",
+                "prompt": "the delivered text",
+                "add_special_tokens": False,
+            },
+        )
+    ]
+    monkeypatch.setattr(
+        client_module.httpx,
+        "AsyncClient",
+        lambda **kwargs: original(
+            **kwargs, transport=httpx.MockTransport(lambda request: httpx.Response(503))
+        ),
+    )
+    with pytest.raises(ModelRequestError):
+        await client.count_visible_tokens("the delivered text")
+
+
+async def test_truncated_transport_response_retains_usage_without_hidden_reasoning():
+    client, _, profile = client_with(
+        "qwen_3_6_27b_gp",
+        [
+            response(
+                "unfinished JSON", finish_reason="length", reasoning_content="PRIVATE_REASONING"
+            ),
+            response("valid"),
+        ],
+    )
+    result = await client.generate(
+        messages=[{"role": "user", "content": "hello"}], generation=profile.generation["tracker"]
+    )
+    attempt = result.metadata["transport_attempts"][0]
+    assert attempt["raw_output"] == "unfinished JSON"
+    assert attempt["output_tokens"] == 3 and attempt["usage_status"] == "known"
+    assert "PRIVATE_REASONING" not in str(attempt)

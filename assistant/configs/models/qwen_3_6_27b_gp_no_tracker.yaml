@@ -1,0 +1,87 @@
+profile_name: qwen_3_6_27b_gp_no_tracker
+provider: vllm
+model_id: qwen3.6-27b
+base_url: http://127.0.0.1:8001/v1
+routing: {}
+reasoning:
+  enabled: false
+  effort: null
+  exclude_from_response: true
+  local_chat_template:
+    enable_thinking: false
+    preserve_thinking: false
+generation:
+  assistant:
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 1.5
+    repetition_penalty: 1.0
+    max_completion_tokens: 32768
+  intra:
+    temperature: 0.3
+    top_p: 1.0
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 0.0
+    repetition_penalty: 1.05
+    max_completion_tokens: 2048
+  inter:
+    temperature: 0.0
+    top_p: 1.0
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 0.0
+    repetition_penalty: 1.0
+    max_completion_tokens: 1024
+retry:
+  max_attempts: 1
+  initial_backoff_seconds: 1.0
+  maximum_backoff_seconds: 8.0
+goal_progression:
+  architecture_version: v2_contracts
+  variant: no_tracker
+  prompts:
+    intra: ../prompts/gp_intra.yaml
+    inter: ../prompts/gp_inter.yaml
+    generator: ../prompts/gp_generator.yaml
+  turn_timeout_seconds: 900
+  max_in_flight_requests: 32
+  structured_decoding:
+    generator: prompt
+  policy:
+    request_budget: 1
+    adjacent_candidate_limit: 2
+    max_adjacent_deliveries: 1
+  context:
+    # Actual deployment capacity confirmed by the user; role budgets remain separate.
+    hard_context_tokens: 262144
+    estimator: provider_text_with_overhead
+    chat_overhead_tokens: 128
+    preserve_required_materials: true
+    role_budgets:
+      intra:
+        max_input_tokens: 16384
+        expanded_input_tokens: 32768
+        max_completion_tokens: 4096
+      inter:
+        max_input_tokens: 16384
+        expanded_input_tokens: 32768
+        max_completion_tokens: 4096
+      generator:
+        max_input_tokens: 16384
+        expanded_input_tokens: 32768
+        max_completion_tokens: 32768
+  recovery:
+    default_max_retries: 3
+    by_role_and_code: {}
+    call_timeout_seconds: 180
+    initial_backoff_seconds: 1.0
+    maximum_backoff_seconds: 8.0
+    output_growth_factor: 1.5
+    correction_max_characters: 2000
+  realization:
+    output_format: json_units
+    request_rendering: frozen_block
+    separator: "\n\n"

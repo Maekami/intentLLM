@@ -124,6 +124,7 @@ def test_human_realizer_prompt_requirements(path: str) -> None:
         "speak only as the user",
         "shortest natural message" if "clear" in path else "does not volunteer",
         "apparent knowledge level",
+        "write every user message in english only",
         "visible conversation",
         "do not invent credentials",
         "preferences",

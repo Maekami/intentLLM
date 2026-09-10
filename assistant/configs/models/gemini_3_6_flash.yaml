@@ -1,0 +1,34 @@
+# Gemini 3.6 Flash high-thinking profile through OpenRouter's
+# OpenAI-compatible Chat Completions endpoint.
+profile_name: gemini_3_6_flash
+provider: openrouter
+model_id: google/gemini-3.6-flash
+base_url: https://openrouter.ai/api/v1
+
+routing:
+  # Keep requests on endpoints that support every parameter in this profile.
+  require_parameters: true
+  allow_fallbacks: true
+
+reasoning:
+  # Gemini 3.6 Flash requires thinking. OpenRouter maps `effort` directly to
+  # Google's `thinkingLevel`; high selects the model's deepest reasoning tier.
+  enabled: true
+  effort: high
+  # Keep reasoning tokens out of the visible response while retaining their
+  # usage in token accounting.
+  exclude_from_response: true
+
+generation:
+  assistant:
+    # null omits sampling parameters and uses the active Google endpoint's
+    # defaults. OpenRouter currently lists both parameters as supported.
+    temperature: null
+    top_p: null
+    # Gemini 3.6 Flash supports up to 65,536 output tokens, including thinking.
+    max_completion_tokens: 65536
+
+retry:
+  max_attempts: 3
+  initial_backoff_seconds: 1.0
+  maximum_backoff_seconds: 8.0

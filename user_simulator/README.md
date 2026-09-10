@@ -267,7 +267,7 @@ inherit from one strict Pydantic base (`extra="forbid"`, `strict=True`). Schema
 names uniquely identify `ControllerResult`, `SatisfactionUpdateResult`, and
 `UserGenerationResult` in `llm/schema_registry.py`.
 
-Every OpenRouter or local vLLM request enforces the same `response_format`:
+By default, OpenRouter and local vLLM requests enforce this `response_format`:
 
 ```python
 response_format = {
@@ -281,6 +281,14 @@ response_format = {
 stream = False
 ```
 
+The isolated `deepseek_v4_flash_0731_official` profile is the only transport
+exception. DeepSeek's official endpoint advertises JSON Object mode but not
+native JSON Schema enforcement, so that profile sends
+`response_format={"type": "json_object"}`. The client appends the complete
+canonical schema to its system instruction and still validates the response
+with the same strict Pydantic model. Invalid responses use the same bounded
+structured-correction retry path; free text is never accepted.
+
 OpenRouter requests additionally set
 `extra_body["provider"]["require_parameters"] = True`. Local vLLM requests
 omit OpenRouter routing, reasoning, and plugin fields; Qwen thinking controls
@@ -288,8 +296,7 @@ are sent through `chat_template_kwargs` instead.
 
 Schemas recursively set `additionalProperties: false` and have canonical
 content hashes. Responses are parsed with Pydantic `model_validate_json`.
-There is no local regex recovery, `json_object` downgrade, or free-text
-fallback. Model profiles may additionally set
+There is no local regex recovery or free-text fallback. Model profiles may additionally set
 `structured_output.response_healing: true`; the default DeepSeek V4 Flash 0731
 profile enables OpenRouter's non-streaming malformed-JSON repair layer. This
 layer handles syntax and wrappers only and does not replace schema or semantic

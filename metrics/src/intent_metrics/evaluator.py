@@ -11,6 +11,7 @@ from intent_metrics.deterministic import (
     compute_assistant_tokens,
     compute_dag_turn_metrics,
 )
+from intent_metrics.errors import MetricDataError
 from intent_metrics.models import (
     EpisodeMetricRecord,
     EpisodeTrace,
@@ -28,9 +29,18 @@ async def evaluate_trace(
     cache: AITRCache | None = None,
 ) -> EpisodeMetricRecord:
     dag = compute_dag_turn_metrics(trace)
-    tokens = compute_assistant_tokens(trace)
     warnings = list(dag.warnings)
-    if tokens.fallback_turns:
+    token_error = None
+    tokens = None
+    try:
+        tokens = compute_assistant_tokens(trace)
+    except MetricDataError as exc:
+        # Token availability must not select the population for E/S or AITR.
+        # Keep the strict token calculator: unknown text counts are not zero,
+        # a partial episode sum, or a fallback to private completion usage.
+        token_error = f"{type(exc).__name__}: {exc}"
+        warnings.append(f"assistant tokens unavailable; E/S retained: {token_error}")
+    if tokens is not None and tokens.fallback_turns:
         warnings.append(
             "assistant output_tokens unavailable; used answer/thinking fallback on turns "
             f"{list(tokens.fallback_turns)}"
@@ -45,7 +55,8 @@ async def evaluate_trace(
         "source_outcome": trace.source_outcome,
         "all_node_exposure_turn": dag.all_node_exposure_turn,
         "all_node_satisfaction_turn": dag.all_node_satisfaction_turn,
-        "assistant_tokens": tokens.assistant_tokens,
+        "assistant_tokens": tokens.assistant_tokens if tokens is not None else None,
+        "token_error": token_error,
         "warnings": tuple(warnings),
     }
     if judge is None:
@@ -158,6 +169,10 @@ def aggregate_metrics(
         grouped.items(), key=lambda item: (item[0][0], difficulty_order[item[0][1]])
     ):
         aitr_ready = all(item.aitr is not None and item.aitr_error is None for item in items)
+        token_values = [
+            item.assistant_tokens for item in items if item.assistant_tokens is not None
+        ]
+        tokens_ready = len(token_values) == len(items)
         models.setdefault(model, {})[difficulty] = {
             "avg_all_node_exposure_turns": round(
                 fmean(item.all_node_exposure_turn for item in items), 2
@@ -165,10 +180,13 @@ def aggregate_metrics(
             "avg_all_node_satisfaction_turns": round(
                 fmean(item.all_node_satisfaction_turn for item in items), 2
             ),
-            "avg_tokens": round(fmean(item.assistant_tokens for item in items), 2),
+            # Report a whole-group mean only when every episode has a count.
+            "avg_tokens": round(fmean(token_values), 2) if tokens_ready else None,
             "aitr": round(fmean(item.aitr for item in items), 2) if aitr_ready else None,
             "diagnostics": {
                 "episode_count": len(items),
+                "token_available_episode_count": len(token_values),
+                "token_missing_episode_count": len(items) - len(token_values),
                 "exposure_failures": sum(
                     item.all_node_exposure_turn == FAILURE_TURN for item in items
                 ),
@@ -181,13 +199,26 @@ def aggregate_metrics(
                 ),
                 "warning_count": sum(len(item.warnings) for item in items),
             },
-            "status": "complete" if aitr_ready else "aitr_incomplete",
+            "status": (
+                "complete"
+                if aitr_ready and tokens_ready
+                else "tokens_incomplete"
+                if aitr_ready
+                else "aitr_incomplete"
+                if tokens_ready
+                else "tokens_and_aitr_incomplete"
+            ),
         }
 
     all_aitr_complete = all(
         record.aitr is not None and not record.aitr_error for record in episode_records
     )
-    complete = bool(episode_records) and not evaluation_failures and all_aitr_complete
+    complete = (
+        bool(episode_records)
+        and not evaluation_failures
+        and all_aitr_complete
+        and all(record.assistant_tokens is not None for record in episode_records)
+    )
     prompt_versions = {
         record.aitr_prompt_version
         for record in episode_records

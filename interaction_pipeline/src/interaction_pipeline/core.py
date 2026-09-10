@@ -9,13 +9,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from assistant.goal_progression import GoalProgressionSession
 from assistant.session import AssistantSession
 from user_simulator.audit.logger import AuditLogger
 from user_simulator.engine.episode import Episode
+from user_simulator.exceptions import EpisodeTurnLimitError
 
 from interaction_pipeline.audit import render_human_audit
 
 EventSink = Callable[[dict[str, Any]], Awaitable[None]]
+TaskFinalizer = Callable[..., None]
 
 
 @dataclass(frozen=True)
@@ -76,6 +79,9 @@ async def run_interaction(
     assistant: AssistantSession,
     audit: AuditLogger,
     event_sink: EventSink | None = None,
+    update_memory: bool = True,
+    task_finalizer: TaskFinalizer | None = None,
+    stop_before_over_budget_generation: bool = False,
 ) -> RunResult:
     sample_id = episode.sample.sample_id
     status = "failed"
@@ -90,6 +96,7 @@ async def run_interaction(
                 getattr(assistant.client, "profile", None), "profile_name", None
             ),
             "assistant_memory_framework": getattr(assistant, "memory_framework", None),
+            "assistant_memory_updates_enabled": update_memory,
         },
     )
     await _emit(
@@ -107,6 +114,11 @@ async def run_interaction(
         await _emit_message(event_sink, sample_id, 0, "user", current_user_message)
 
         while not episode.state.terminated:
+            if stop_before_over_budget_generation and episode.state.turn_index >= episode.max_turns:
+                raise EpisodeTurnLimitError(
+                    f"episode reached maximum of {episode.max_turns} assistant turns "
+                    "without natural termination"
+                )
             target_turn = episode.state.turn_index + 1
             audit.log(
                 "assistant_generation_requested",
@@ -116,7 +128,31 @@ async def run_interaction(
                     "user_message": current_user_message,
                 },
             )
-            assistant_response = await assistant.respond(current_user_message)
+            try:
+                if isinstance(assistant, GoalProgressionSession):
+                    # Persist component results when they occur, even if a later
+                    # component fails. Never publish private plans to event_sink/UI.
+                    assistant_response = await assistant.respond(
+                        current_user_message,
+                        audit_sink=lambda kind, payload, turn=target_turn: audit.log(kind, turn, payload),
+                    )
+                else:
+                    assistant_response = await assistant.respond(current_user_message)
+            except Exception as exc:
+                # Some baselines perform multiple private model calls before a
+                # simulator-visible turn is accepted. Preserve their aggregate
+                # metadata even when that local process ends in a typed failure.
+                audit.log(
+                    "assistant_generation_failed",
+                    target_turn,
+                    {
+                        "baseline": assistant.baseline.name,
+                        "error_type": type(exc).__name__,
+                        "message": str(exc),
+                        "llm_call": _public_llm_metadata(assistant.last_call_metadata),
+                    },
+                )
+                raise
             audit.log(
                 "assistant_generation_completed",
                 target_turn,
@@ -149,17 +185,20 @@ async def run_interaction(
                 current_user_message,
             )
 
-        finalization_attempted = True
-        _finalize_assistant_task(
-            assistant=assistant,
-            audit=audit,
-            task_id=sample_id,
-            success=True,
-            feedback=(
-                f"Episode terminated normally after {episode.state.turn_index} assistant turns."
-            ),
-            turn_index=episode.state.turn_index,
-        )
+        if update_memory:
+            finalization_attempted = True
+            (task_finalizer or _finalize_assistant_task)(
+                assistant=assistant,
+                audit=audit,
+                task_id=sample_id,
+                success=True,
+                feedback=(
+                    f"Episode terminated normally after {episode.state.turn_index} assistant turns."
+                ),
+                turn_index=episode.state.turn_index,
+            )
+        else:
+            _log_memory_update_disabled(assistant, audit, episode.state.turn_index)
         status = "completed"
         audit.log(
             "pipeline_run_completed",
@@ -168,10 +207,10 @@ async def run_interaction(
         )
     except Exception as exc:  # noqa: BLE001 - sample failures must not abort a batch
         error = f"{type(exc).__name__}: {exc}"
-        if not finalization_attempted:
+        if update_memory and not finalization_attempted:
             finalization_attempted = True
             try:
-                _finalize_assistant_task(
+                (task_finalizer or _finalize_assistant_task)(
                     assistant=assistant,
                     audit=audit,
                     task_id=sample_id,
@@ -241,6 +280,24 @@ def _finalize_assistant_task(
             else "assistant_memory_update_skipped"
         )
         audit.log(event_type, turn_index, result)
+
+
+def _log_memory_update_disabled(
+    assistant: AssistantSession,
+    audit: AuditLogger,
+    turn_index: int,
+) -> None:
+    framework = getattr(assistant, "memory_framework", None)
+    if framework is None:
+        return
+    audit.log(
+        "assistant_memory_update_disabled",
+        turn_index,
+        {
+            "memory_framework": framework,
+            "reason": "disabled_by_run_configuration",
+        },
+    )
 
 
 def _public_llm_metadata(metadata: dict[str, Any]) -> dict[str, Any]:

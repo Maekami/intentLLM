@@ -122,3 +122,16 @@ class MemoryUpdateResult:
             "entry_count": self.entry_count,
             "reason": self.reason,
         }
+
+
+@dataclass(frozen=True)
+class PreparedMemoryUpdate:
+    """One finalized episode waiting for persistence at an evolution barrier."""
+
+    task_id: str | None
+    entry: MemoryEntry | None
+    reason: str
+
+    @property
+    def ready(self) -> bool:
+        return self.entry is not None

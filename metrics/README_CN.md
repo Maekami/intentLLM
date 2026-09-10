@@ -172,8 +172,22 @@ metrics_results/
 - aggregate 的浮点指标仅在最终输出阶段四舍五入，并按两位小数序列化。
 
 如果任意 AITR 调用在所有重试后仍失败，对应 episode 会保留 `aitr_error`，该难度组的
-aggregate `aitr` 为 `null`，不会把失败 episode 从分母中静默删除。trace 本身缺字段、
-数据集不可解析或因非轮数预算原因失败时，同样会进入 `evaluation_errors`，CLI 返回非零状态。
+aggregate `aitr` 为 `null`，不会把失败 episode 从分母中静默删除。
+
+Token 缺失/无效只影响 token 指标：在 E/S 可计算时保留该 episode，记录
+`assistant_tokens=null`、`token_error` 和 warning；继续计算可选 AITR 及读取/写入其缓存。
+不以 0、部分轮次总和或内部 completion usage 替代未知可见计数。
+同一 model/difficulty 组只要有一个 episode 的 token 未知，整组 `avg_tokens=null`
+（文本为 `N/A`），不会把可用子集均值当成整组均值。diagnostics 记录
+`token_available_episode_count` / `token_missing_episode_count`；E/S 始终使用该组全部
+可评估 episode。合法的 0 tokens 仍参与平均。
+
+单条 token 未知时 `status=tokens_incomplete`。组状态分别为 `complete`、
+`tokens_incomplete`、`aitr_incomplete` 或 `tokens_and_aitr_incomplete`；token 缺失时
+顶层 `complete=false` 表示指标未全部齐备，不表示 E/S 被丢弃。
+CLI 显示缺失计数，仍写出全部评估产物，且不单因 token 缺失返回非零。
+AITR API 错误以及 trace/DAG 本身不可解析、关键 E/S 数据损坏或非预算原因运行失败，
+保持原错误处理和 CLI 非零状态；token 隔离不会吞掉这些错误。
 
 ## 测试
 
@@ -182,3 +196,29 @@ PYTHONPATH=metrics/src:user_simulator/src pytest -q metrics/tests
 ```
 
 测试不访问 OpenRouter。
+
+## Goal-Progression 与统一可见 token 口径
+
+带 `visible_response_tokens` 的运行优先累计该字段；如果字段存在但为 null，明确报告
+计数缺失，不回退为内部输出或 reasoning；评估层单独捕获 token 数据异常并保留 E/S。
+没有该字段的旧运行保留原有 token 行为，
+因此不能直接把旧 completion 总量与新可见 token 混在一张对照表中。
+
+可用同一份本地 tokenizer.json 离线重算 Prompted Base 和 GP，无网络请求、不修改原日志：
+
+```bash
+# 可选依赖：在 metrics 环境安装 .[visible-tokens]，或使用已有 tokenizers。
+python -m intent_metrics.visible_tokens \
+  interaction_pipeline/runs_gp/prompt_base_smoke \
+  interaction_pipeline/runs_gp/full_smoke \
+  --tokenizer /absolute/path/to/tokenizer.json \
+  --output /tmp/gp_visible_tokens.json
+```
+
+报告记录 tokenizer 文件 SHA-256 和每个 episode 的可见总量，只读取
+`transcript.jsonl` 中 assistant 的 content，禁用 special tokens、padding、truncation。
+每组平均值是先在 episode 内累加、再对 episode 平均，不除以轮数。包含有空 transcript
+的零交付失败；缺失 transcript 会报错，不静默删除失败样本。内部调用、隐藏 reasoning、
+未交付输出不计入。E/S 仍由现有评估命令计算，`--skip-aitr` 不调用外部 Judge。
+
+2026-09-08 审核后修复验证：`PYTHONPATH=metrics/src:user_simulator/src python -m pytest metrics/tests -q`，50 passed。新增端到端回归复现并修复 E=1、S=1、visible_response_tokens=null 时 episode 被误排除的问题。离线 token 重算仍输出独立 JSON，不会自动回填原事件；保留 E/S 的修复直接位于正式评估路径。

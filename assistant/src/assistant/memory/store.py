@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -36,39 +36,72 @@ class JsonMemoryStore:
             return self._read_unlocked()
 
     def upsert(self, entry: MemoryEntry) -> MemoryUpdateResult:
+        return self.upsert_many([entry])[0]
+
+    def upsert_many(
+        self,
+        new_entries: Iterable[MemoryEntry],
+        *,
+        expected_entries: Iterable[MemoryEntry] | None = None,
+    ) -> list[MemoryUpdateResult]:
+        """Apply ordered updates with one read-lock-write transaction."""
+
+        pending = list(new_entries)
+        expected = list(expected_entries) if expected_entries is not None else None
+        if not pending and expected is None:
+            return []
         with self._locked():
             entries = self._read_unlocked()
-            existing_index = next(
-                (index for index, item in enumerate(entries) if item.task_id == entry.task_id),
-                None,
-            )
-            if existing_index is not None:
-                entries[existing_index] = entry
-                reason = "updated_existing_task"
-            elif len(entries) >= self.settings.max_entries:
-                if not self.settings.prune_oldest_when_full:
-                    return MemoryUpdateResult(
-                        stored=False,
+            if expected is not None and [item.to_dict() for item in entries] != [
+                item.to_dict() for item in expected
+            ]:
+                raise MemoryStoreError(
+                    f"memory store {self.path} changed while an evolution mini-batch was running"
+                )
+            if not pending:
+                return []
+            results: list[MemoryUpdateResult] = []
+            changed = False
+            for entry in pending:
+                existing_index = next(
+                    (index for index, item in enumerate(entries) if item.task_id == entry.task_id),
+                    None,
+                )
+                if existing_index is not None:
+                    entries[existing_index] = entry
+                    reason = "updated_existing_task"
+                elif len(entries) >= self.settings.max_entries:
+                    if not self.settings.prune_oldest_when_full:
+                        results.append(
+                            MemoryUpdateResult(
+                                stored=False,
+                                task_id=entry.task_id,
+                                path=str(self.path),
+                                entry_count=len(entries),
+                                reason="capacity_reached",
+                            )
+                        )
+                        continue
+                    remove_count = len(entries) - self.settings.max_entries + 1
+                    entries = entries[remove_count:]
+                    entries.append(entry)
+                    reason = "added_after_pruning_oldest"
+                else:
+                    entries.append(entry)
+                    reason = "added"
+                changed = True
+                results.append(
+                    MemoryUpdateResult(
+                        stored=True,
                         task_id=entry.task_id,
                         path=str(self.path),
                         entry_count=len(entries),
-                        reason="capacity_reached",
+                        reason=reason,
                     )
-                remove_count = len(entries) - self.settings.max_entries + 1
-                entries = entries[remove_count:]
-                entries.append(entry)
-                reason = "added_after_pruning_oldest"
-            else:
-                entries.append(entry)
-                reason = "added"
-            self._write_unlocked(entries)
-            return MemoryUpdateResult(
-                stored=True,
-                task_id=entry.task_id,
-                path=str(self.path),
-                entry_count=len(entries),
-                reason=reason,
-            )
+                )
+            if changed:
+                self._write_unlocked(entries)
+            return results
 
     def skipped(self, *, task_id: str | None, reason: str) -> MemoryUpdateResult:
         return MemoryUpdateResult(

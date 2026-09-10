@@ -18,7 +18,25 @@ def main(
     port: int = typer.Option(8000, "--port", min=1, max=65535),
     difficulty: str | None = typer.Option(None, "--difficulty", help="easy, medium, or hard."),
     seed: int | None = typer.Option(None, "--seed"),
-    baseline: str | None = typer.Option(None, "--baseline", help="base or prompt_base."),
+    baseline: str | None = typer.Option(
+        None,
+        "--baseline",
+        help=(
+            "base, prompt_base, goal_progression, interactcomp_react, or trace2skill. base means no "
+            "Prompted-Base prompt; a skill bound by a *_trace2skill model profile "
+            "remains active."
+        ),
+    ),
+    react_action_guard: bool | None = typer.Option(
+        None,
+        "--react-action-guard/--no-react-action-guard",
+        help="Toggle the second-layer semantic guard for interactcomp_react.",
+    ),
+    trace2skill_skill: Path | None = typer.Option(
+        None,
+        "--trace2skill-skill",
+        help="Generated SKILL.md path; use together with --baseline trace2skill.",
+    ),
     assistant_model_profile: str | None = typer.Option(
         None, "--assistant-model-profile", help="Assistant model profile name or YAML path."
     ),
@@ -38,10 +56,13 @@ def main(
         simulator_model_profile=simulator_model_profile,
         assistant_model_profile=assistant_model_profile,
         baseline=baseline,
+        trace2skill_skill=trace2skill_skill,
+        react_action_guard=react_action_guard,
         difficulty=difficulty,
         seed=seed,
         concurrency=None,
         sample_retries=None,
+        update_memory=None,
         output_dir=output_dir,
         max_turns=max_turns,
     )

@@ -2,13 +2,15 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from openai import RateLimitError
 from pydantic import BaseModel
 
 from user_simulator.cli import prompt_smoke_test
 from user_simulator.config import EnvironmentSettings, GenerationSettings, load_model_profile
 from user_simulator.domain.results import ControllerResult, SatisfactionUpdateResult
-from user_simulator.exceptions import StructuredOutputError
+from user_simulator.exceptions import OpenRouterRequestError, StructuredOutputError
 from user_simulator.llm.openrouter_client import OpenRouterStructuredClient
 from user_simulator.llm.schema_registry import SCHEMA_REGISTRY
 
@@ -21,6 +23,8 @@ class FakeCompletions:
     async def create(self, **kwargs):
         self.calls.append(kwargs)
         response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
         return response
 
 
@@ -60,6 +64,28 @@ def response(
     )
 
 
+def rate_limit_error(
+    provider_error_code: str,
+    *,
+    retry_after: str | None = None,
+) -> RateLimitError:
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    headers = {"Retry-After": retry_after} if retry_after is not None else {}
+    http_response = httpx.Response(429, request=request, headers=headers)
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "code": 429,
+            "metadata": {
+                "provider_name": "Baidu",
+                "provider_error_code": provider_error_code,
+                "limit_source": "upstream_provider_shared_pool",
+            },
+        }
+    }
+    return RateLimitError("rate limited", response=http_response, body=body)
+
+
 def client_with(responses: list) -> tuple[OpenRouterStructuredClient, FakeCompletions]:
     completions = FakeCompletions(responses)
     sdk = SimpleNamespace(chat=SimpleNamespace(completions=completions))
@@ -92,7 +118,13 @@ async def test_exact_strict_request_for_every_schema(spec) -> None:
     assert response_format["json_schema"]["name"] == spec.name
     assert response_format["json_schema"]["schema"]["type"] == "object"
     assert response_format["json_schema"]["schema"]["additionalProperties"] is False
-    assert request["extra_body"]["provider"]["require_parameters"] is True
+    assert request["extra_body"]["provider"] == {
+        "order": ["baidu", "siliconflow", "nextbit", "deepinfra"],
+        "only": ["baidu", "siliconflow", "nextbit", "deepinfra"],
+        "quantizations": ["fp8"],
+        "require_parameters": True,
+        "allow_fallbacks": True,
+    }
     assert request["extra_body"]["plugins"] == [{"id": "response-healing"}]
     assert request["stream"] is False
 
@@ -120,6 +152,100 @@ async def test_luna_profile_omits_unsupported_temperature() -> None:
         "exclude": True,
     }
     assert "plugins" not in request["extra_body"]
+
+
+async def test_provider_routing_can_be_overridden() -> None:
+    completions = FakeCompletions([response()])
+    sdk = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    profile = load_model_profile(
+        overrides={
+            "routing": {
+                "order": ["deepinfra"],
+                "only": ["deepinfra"],
+                "quantizations": ["fp8"],
+                "allow_fallbacks": False,
+            }
+        }
+    )
+    client = OpenRouterStructuredClient(profile, client=sdk)
+
+    await client.generate_structured(
+        messages=[{"role": "user", "content": "test"}],
+        response_model=ControllerResult,
+        schema_name="controller_result",
+        generation=profile.generation["controller"],
+    )
+
+    assert completions.calls[0]["extra_body"]["provider"] == {
+        "order": ["deepinfra"],
+        "only": ["deepinfra"],
+        "quantizations": ["fp8"],
+        "require_parameters": True,
+        "allow_fallbacks": False,
+    }
+
+
+async def test_official_deepseek_profile_sends_an_exclusive_provider_route() -> None:
+    completions = FakeCompletions([response()])
+    sdk = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    profile = load_model_profile("deepseek_v4_flash_0731_official")
+    client = OpenRouterStructuredClient(profile, client=sdk)
+
+    await client.generate_structured(
+        messages=[{"role": "user", "content": "test"}],
+        response_model=ControllerResult,
+        schema_name="controller_result",
+        generation=profile.generation["controller"],
+    )
+
+    assert completions.calls[0]["extra_body"]["provider"] == {
+        "order": ["deepseek"],
+        "only": ["deepseek"],
+        "require_parameters": True,
+        "allow_fallbacks": False,
+    }
+    request = completions.calls[0]
+    assert request["response_format"] == {"type": "json_object"}
+    assert request["messages"][0]["role"] == "system"
+    assert "JSON OBJECT CONTRACT" in request["messages"][0]["content"]
+    assert '"additionalProperties":false' in request["messages"][0]["content"]
+    assert client.last_call_metadata["structured_output_type"] == "json_schema"
+    assert client.last_call_metadata["structured_output_transport"] == "json_object"
+    assert client.last_call_metadata["provider_schema_enforced"] is False
+    assert client.last_call_metadata["local_schema_validation"] is True
+
+
+async def test_official_deepseek_json_object_transport_keeps_strict_local_retry() -> None:
+    invalid = '{"decisions":[],"summary":""}'
+    valid = '{"decisions":[],"summary":"valid"}'
+    completions = FakeCompletions([response(invalid), response(valid)])
+    sdk = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    profile = load_model_profile(
+        "deepseek_v4_flash_0731_official",
+        overrides={
+            "retry": {
+                "max_attempts": 2,
+                "initial_backoff_seconds": 0,
+                "maximum_backoff_seconds": 0,
+            }
+        },
+    )
+    client = OpenRouterStructuredClient(profile, client=sdk)
+
+    result = await client.generate_structured(
+        messages=[{"role": "system", "content": "Controller task"}],
+        response_model=ControllerResult,
+        schema_name="controller_result",
+        generation=profile.generation["controller"],
+    )
+
+    assert result.summary == "valid"
+    assert len(completions.calls) == 2
+    assert all(call["response_format"] == {"type": "json_object"} for call in completions.calls)
+    assert "JSON OBJECT CONTRACT" in completions.calls[1]["messages"][0]["content"]
+    assert "STRUCTURED OUTPUT CORRECTION" in completions.calls[1]["messages"][-1]["content"]
+    assert client.last_call_metadata["structured_retry_count"] == 1
+    assert client.last_call_metadata["structured_validation_status"] == "valid"
 
 
 async def test_disabled_reasoning_omits_effort_and_exclusion() -> None:
@@ -251,6 +377,26 @@ def test_local_vllm_client_needs_no_openrouter_key(monkeypatch) -> None:
     assert constructed["api_key"] == "EMPTY"
     assert constructed["base_url"] == "http://127.0.0.1:8005/v1"
     assert constructed["default_headers"] == {}
+    assert "max_retries" not in constructed
+
+
+def test_baidu_rate_limit_profile_disables_hidden_sdk_retries(monkeypatch) -> None:
+    constructed: dict = {}
+
+    def fake_openai(**kwargs):
+        constructed.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        "user_simulator.llm.openrouter_client.AsyncOpenAI",
+        fake_openai,
+    )
+    OpenRouterStructuredClient(
+        load_model_profile(),
+        EnvironmentSettings(openrouter_api_key="fake"),
+    )
+
+    assert constructed["max_retries"] == 0
 
 
 async def test_usage_records_thinking_and_answer_tokens() -> None:
@@ -284,6 +430,164 @@ async def test_usage_keeps_breakdown_unknown_when_provider_omits_details() -> No
     assert client.last_call_metadata["output_tokens"] == 9
     assert client.last_call_metadata["thinking_tokens"] is None
     assert client.last_call_metadata["answer_tokens"] is None
+
+
+@pytest.mark.parametrize(
+    ("provider_error_code", "expected_type", "expected_delay"),
+    [
+        ("rpm_rate_limit_exceeded", "rpm", 3.0),
+        ("tpm_rate_limit_exceeded", "tpm", 7.0),
+        ("rate_limit_exceeded", "generic", 5.0),
+    ],
+)
+async def test_rate_limit_uses_provider_specific_backoff_without_consuming_normal_budget(
+    monkeypatch,
+    provider_error_code: str,
+    expected_type: str,
+    expected_delay: float,
+) -> None:
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(
+        "user_simulator.llm.openrouter_client.asyncio.sleep",
+        fake_sleep,
+    )
+    completions = FakeCompletions(
+        [
+            rate_limit_error(provider_error_code),
+            response(content="not-json"),
+            response(),
+        ]
+    )
+    sdk = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    profile = load_model_profile(
+        overrides={
+            "retry": {
+                "max_attempts": 2,
+                "initial_backoff_seconds": 0,
+                "maximum_backoff_seconds": 0,
+                "rate_limit": {
+                    "max_attempts": 2,
+                    "rpm_initial_backoff_seconds": 3,
+                    "tpm_initial_backoff_seconds": 7,
+                    "generic_initial_backoff_seconds": 5,
+                    "maximum_backoff_seconds": 10,
+                    "jitter_ratio": 0,
+                    "honor_retry_after": True,
+                },
+            }
+        }
+    )
+    client = OpenRouterStructuredClient(profile, client=sdk)
+
+    result = await client.generate_structured(
+        messages=[{"role": "user", "content": "test"}],
+        response_model=ControllerResult,
+        schema_name="controller_result",
+        generation=GenerationSettings(temperature=0, max_completion_tokens=100),
+    )
+
+    assert result.summary == "ok"
+    assert delays == [expected_delay, 0]
+    assert len(completions.calls) == 3
+    assert client.last_call_metadata["request_attempt_count"] == 3
+    assert client.last_call_metadata["rate_limit_retry_count"] == 1
+    assert client.last_call_metadata["transport_retry_count"] == 1
+    assert client.last_call_metadata["structured_retry_count"] == 1
+    assert client.last_call_metadata["rate_limit_wait_seconds"] == expected_delay
+    assert client.last_call_metadata["last_rate_limit_type"] == expected_type
+    assert client.last_call_metadata["provider"] == "test-provider"
+
+
+async def test_rate_limit_honors_retry_after_as_minimum(monkeypatch) -> None:
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(
+        "user_simulator.llm.openrouter_client.asyncio.sleep",
+        fake_sleep,
+    )
+    completions = FakeCompletions(
+        [rate_limit_error("rpm_rate_limit_exceeded", retry_after="23"), response()]
+    )
+    sdk = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    profile = load_model_profile(
+        overrides={
+            "retry": {
+                "rate_limit": {
+                    "max_attempts": 2,
+                    "rpm_initial_backoff_seconds": 3,
+                    "maximum_backoff_seconds": 10,
+                    "jitter_ratio": 0,
+                    "honor_retry_after": True,
+                }
+            }
+        }
+    )
+    client = OpenRouterStructuredClient(profile, client=sdk)
+
+    await client.generate_structured(
+        messages=[{"role": "user", "content": "test"}],
+        response_model=ControllerResult,
+        schema_name="controller_result",
+        generation=GenerationSettings(temperature=0, max_completion_tokens=100),
+    )
+
+    assert delays == [23.0]
+    assert client.last_call_metadata["rate_limit_wait_seconds"] == 23.0
+
+
+async def test_rate_limit_stops_at_dedicated_attempt_limit(monkeypatch) -> None:
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(
+        "user_simulator.llm.openrouter_client.asyncio.sleep",
+        fake_sleep,
+    )
+    completions = FakeCompletions(
+        [rate_limit_error("tpm_rate_limit_exceeded") for _ in range(3)]
+    )
+    sdk = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    profile = load_model_profile(
+        overrides={
+            "retry": {
+                "max_attempts": 4,
+                "rate_limit": {
+                    "max_attempts": 3,
+                    "tpm_initial_backoff_seconds": 2,
+                    "maximum_backoff_seconds": 3,
+                    "jitter_ratio": 0,
+                },
+            }
+        }
+    )
+    client = OpenRouterStructuredClient(profile, client=sdk)
+
+    with pytest.raises(OpenRouterRequestError, match="failed after 3 attempts"):
+        await client.generate_structured(
+            messages=[{"role": "user", "content": "test"}],
+            response_model=ControllerResult,
+            schema_name="controller_result",
+            generation=GenerationSettings(temperature=0, max_completion_tokens=100),
+        )
+
+    assert delays == [2.0, 3.0]
+    assert len(completions.calls) == 3
+    assert client.last_call_metadata["provider"] == "Baidu"
+    assert client.last_call_metadata["request_attempt_count"] == 3
+    assert client.last_call_metadata["rate_limit_retry_count"] == 2
+    assert client.last_call_metadata["transport_retry_count"] == 2
+    assert client.last_call_metadata["structured_retry_count"] == 0
+    assert client.last_call_metadata["rate_limit_wait_seconds"] == 5.0
+    assert client.last_call_metadata["last_rate_limit_type"] == "tpm"
 
 
 @pytest.mark.parametrize(

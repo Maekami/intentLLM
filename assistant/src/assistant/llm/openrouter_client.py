@@ -2,6 +2,7 @@ import asyncio
 import time
 from typing import Any
 
+import httpx
 from openai import (
     APIConnectionError,
     APIStatusError,
@@ -12,6 +13,7 @@ from openai import (
 
 from assistant.config import EnvironmentSettings, GenerationSettings, ModelProfile
 from assistant.exceptions import (
+    ConfigurationError,
     InvalidModelResponseError,
     ModelRequestError,
     OpenRouterRequestError,
@@ -37,6 +39,9 @@ class OpenAICompatibleChatClient:
                 api_key=api_key,
                 base_url=profile.base_url,
                 default_headers=headers,
+                # GP owns an explicit bounded transport policy; preserve the SDK
+                # default for existing baselines.
+                max_retries=0 if profile.goal_progression is not None else 2,
             )
         self.last_call_metadata: dict[str, Any] = {}
 
@@ -62,6 +67,7 @@ class OpenAICompatibleChatClient:
         *,
         messages: list[dict[str, Any]],
         generation: GenerationSettings,
+        response_schema: dict[str, Any] | None = None,
     ) -> GeneratedResponse:
         if not messages:
             raise ValueError("messages must not be empty")
@@ -70,10 +76,8 @@ class OpenAICompatibleChatClient:
         retry = self.profile.retry
         last_finish_reason: str | None = None
         last_refusal: str | None = None
-        if (
-            not self.profile.reasoning.enabled
-            and self.profile.reasoning.effort is not None
-        ):
+        transport_attempts: list[dict[str, Any]] = []
+        if not self.profile.reasoning.enabled and self.profile.reasoning.effort is not None:
             reasoning: dict[str, Any] = {"effort": self.profile.reasoning.effort}
         else:
             reasoning = {"enabled": self.profile.reasoning.enabled}
@@ -84,6 +88,7 @@ class OpenAICompatibleChatClient:
 
         for attempt in range(1, retry.max_attempts + 1):
             started = time.perf_counter()
+            attempt_response = None
             try:
                 extra_body: dict[str, Any] = {}
                 if self.profile.provider == "openrouter":
@@ -109,6 +114,15 @@ class OpenAICompatibleChatClient:
                     "stream": False,
                     "extra_body": extra_body,
                 }
+                if response_schema is not None:
+                    request_options["response_format"] = {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "goal_progression_output",
+                            "strict": True,
+                            "schema": response_schema,
+                        },
+                    }
                 if generation.temperature is not None:
                     request_options["temperature"] = generation.temperature
                 if generation.top_p is not None:
@@ -116,6 +130,7 @@ class OpenAICompatibleChatClient:
                 if generation.presence_penalty is not None:
                     request_options["presence_penalty"] = generation.presence_penalty
                 response = await self.client.chat.completions.create(**request_options)
+                attempt_response = response
                 if not response.choices:
                     raise InvalidModelResponseError("model response contained no choices")
                 choice = response.choices[0]
@@ -149,7 +164,16 @@ class OpenAICompatibleChatClient:
                     getattr(completion_token_details, "reasoning_tokens", None)
                 )
                 answer_tokens = _answer_token_count(output_tokens, thinking_tokens)
-                self.last_call_metadata = {
+                transport_attempts.append(
+                    {
+                        "attempt": attempt,
+                        "status": "success",
+                        "latency_seconds": time.perf_counter() - started,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                    }
+                )
+                call_metadata = {
                     "model_id": self.profile.model_id,
                     "model_profile": self.profile.profile_name,
                     "request_id": getattr(response, "id", None),
@@ -157,6 +181,7 @@ class OpenAICompatibleChatClient:
                     "finish_reason": finish_reason,
                     "latency_seconds": time.perf_counter() - started,
                     "transport_retry_count": attempt - 1,
+                    "transport_attempts": transport_attempts,
                     "input_tokens": input_tokens,
                     # OpenRouter and vLLM report total completion tokens here.
                     "output_tokens": output_tokens,
@@ -166,10 +191,12 @@ class OpenAICompatibleChatClient:
                     "response": content,
                     "reasoning_preserved": bool(reasoning_content or reasoning_details),
                 }
+                self.last_call_metadata = call_metadata
                 return GeneratedResponse(
                     content=content,
                     reasoning_content=reasoning_content,
                     reasoning_details=reasoning_details,
+                    metadata=dict(call_metadata),
                 )
             except InvalidModelResponseError as exc:
                 last_error = exc
@@ -177,10 +204,43 @@ class OpenAICompatibleChatClient:
                 last_error = exc
             except APIStatusError as exc:
                 if exc.status_code < 500:
-                    raise self._request_error(
-                        f"rejected the request with HTTP {exc.status_code}: {exc}"
-                    ) from exc
+                    if self.profile.goal_progression is None:
+                        raise self._request_error(
+                            f"rejected the request with HTTP {exc.status_code}: {exc}"
+                        ) from exc
+                    # Keep the server's explanation, not headers or request data.
+                    body = exc.body
+                    if isinstance(body, dict) and isinstance(body.get("error"), dict):
+                        body = body["error"]
+                    detail = body.get("message") if isinstance(body, dict) else None
+                    detail = str(detail or exc.message)[:1000]
+                    error = ConfigurationError(
+                        f"model rejected the request with HTTP {exc.status_code}: {detail}"
+                    )
+                    error.call_metadata = {
+                        "transport_attempts": [
+                            *transport_attempts,
+                            {
+                                "attempt": attempt,
+                                "status": "failed",
+                                "http_status": exc.status_code,
+                                "error_message": detail,
+                                "latency_seconds": time.perf_counter() - started,
+                            },
+                        ]
+                    }
+                    raise error from exc
                 last_error = exc
+            transport_attempts.append(
+                {
+                    "attempt": attempt,
+                    "status": "failed",
+                    "error_type": type(last_error).__name__,
+                    "latency_seconds": time.perf_counter() - started,
+                    "usage_status": "unknown",
+                    **_failed_response_audit(attempt_response),
+                }
+            )
             if attempt < retry.max_attempts:
                 delay = min(
                     retry.initial_backoff_seconds * (2 ** (attempt - 1)),
@@ -192,16 +252,52 @@ class OpenAICompatibleChatClient:
             "model_id": self.profile.model_id,
             "model_profile": self.profile.profile_name,
             "transport_retry_count": retry.max_attempts - 1,
+            "transport_attempts": transport_attempts,
             "finish_reason": last_finish_reason,
             "refusal": last_refusal,
             "error": str(last_error),
             "messages": request_messages,
         }
         if isinstance(last_error, InvalidModelResponseError):
+            last_error.call_metadata = dict(self.last_call_metadata)
             raise last_error
-        raise self._request_error(
+        error = self._request_error(
             f"request failed after {retry.max_attempts} attempts: {last_error}"
-        ) from last_error
+        )
+        error.call_metadata = dict(self.last_call_metadata)
+        raise error from last_error
+
+    async def count_visible_tokens(self, content: str) -> dict[str, Any]:
+        """Tokenize the delivered text without chat templates, reasoning or EOS.
+
+        This is a tokenizer request, not another LLM generation. Unsupported
+        providers stay explicitly unknown, never substituting completion usage.
+        """
+        if self.profile.provider != "vllm":
+            return {"visible_response_tokens": None, "visible_token_source": "unknown"}
+        root = self.profile.base_url.rstrip("/").removesuffix("/v1")
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.post(
+                    root + "/tokenize",
+                    headers={"Authorization": f"Bearer {self.environment.vllm_api_key or 'EMPTY'}"},
+                    json={
+                        "model": self.profile.model_id,
+                        "prompt": content,
+                        "add_special_tokens": False,
+                    },
+                )
+                response.raise_for_status()
+                count = response.json().get("count")
+                if type(count) is not int or count < 0:
+                    raise ValueError("invalid tokenizer count")
+        except (httpx.HTTPError, ValueError) as exc:
+            raise ModelRequestError("visible tokenizer unavailable") from exc
+        return {
+            "visible_response_tokens": count,
+            "visible_token_source": "vllm /tokenize; add_special_tokens=false",
+            "visible_token_model": self.profile.model_id,
+        }
 
     def _request_error(self, detail: str) -> ModelRequestError:
         if self.profile.provider == "openrouter":
@@ -225,6 +321,24 @@ class OpenAICompatibleChatClient:
                 item["reasoning"] = legacy_reasoning
             normalized.append(item)
         return normalized
+
+
+def _failed_response_audit(response: Any) -> dict[str, Any]:
+    """Retain billed usage and visible content even for rejected/truncated output."""
+    if response is None:
+        return {}
+    usage = getattr(response, "usage", None)
+    choices = getattr(response, "choices", [])
+    choice = choices[0] if choices else None
+    content = getattr(getattr(choice, "message", None), "content", None)
+    return {
+        "request_id": getattr(response, "id", None),
+        "input_tokens": _optional_nonnegative_int(getattr(usage, "prompt_tokens", None)),
+        "output_tokens": _optional_nonnegative_int(getattr(usage, "completion_tokens", None)),
+        "usage_status": "known" if usage is not None else "unknown",
+        "finish_reason": getattr(choice, "finish_reason", None),
+        "raw_output": content if isinstance(content, str) else None,
+    }
 
 
 def _json_value(value: Any) -> Any:

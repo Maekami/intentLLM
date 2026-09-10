@@ -39,11 +39,46 @@ def main(
         None,
         "--sample-retries",
         min=0,
-        help="Maximum full-sample retries after the initial attempt (default: 3).",
+        help=(
+            "Maximum full-sample retries after the initial attempt for any failed "
+            "evaluation episode, including turn-limit failures (default: 3)."
+        ),
+    ),
+    update_memory: bool | None = typer.Option(
+        None,
+        "--update-memory/--no-update-memory",
+        help=(
+            "Whether completed test/evaluation episodes are written back to Evo-Memory; "
+            "defaults to run.update_memory in pipeline YAML."
+        ),
     ),
     difficulty: str | None = typer.Option(None, "--difficulty", help="easy, medium, or hard."),
     seed: int | None = typer.Option(None, "--seed", help="Base seed; sample index is added."),
-    baseline: str | None = typer.Option(None, "--baseline", help="base or prompt_base."),
+    baseline: str | None = typer.Option(
+        None,
+        "--baseline",
+        help=(
+            "base, prompt_base, goal_progression, interactcomp_react, or trace2skill. base means no "
+            "Prompted-Base prompt; a skill bound by a *_trace2skill model profile "
+            "remains active."
+        ),
+    ),
+    react_action_guard: bool | None = typer.Option(
+        None,
+        "--react-action-guard/--no-react-action-guard",
+        help=(
+            "Enable the second-layer LLM action-boundary validator for "
+            "interactcomp_react; disabling retains only its prompt/schema guard."
+        ),
+    ),
+    trace2skill_skill: Path | None = typer.Option(
+        None,
+        "--trace2skill-skill",
+        help=(
+            "Legacy/ad-hoc generated SKILL.md path; model-bound *_trace2skill profiles "
+            "select their own skill automatically."
+        ),
+    ),
     assistant_model_profile: str | None = typer.Option(
         None, "--assistant-model-profile", help="Assistant model profile name or YAML path."
     ),
@@ -72,10 +107,13 @@ def main(
         simulator_model_profile=simulator_model_profile,
         assistant_model_profile=assistant_model_profile,
         baseline=baseline,
+        trace2skill_skill=trace2skill_skill,
+        react_action_guard=react_action_guard,
         difficulty=difficulty,
         seed=seed,
         concurrency=concurrency,
         sample_retries=sample_retries,
+        update_memory=update_memory,
         output_dir=output_dir,
         max_turns=max_turns,
     )
@@ -96,6 +134,7 @@ def main(
         "output_root": resolved_output,
         "concurrency": config.run.concurrency,
         "sample_retries": config.run.sample_retries,
+        "update_memory": config.run.update_memory,
     }
     if show_progress:
         counts = {"succeeded": 0, "failed": 0}

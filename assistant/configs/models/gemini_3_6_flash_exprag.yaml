@@ -1,0 +1,57 @@
+# Gemini 3.6 Flash minimal-thinking profile with Evo-Memory ExpRAG enabled.
+profile_name: gemini_3_6_flash_exprag
+provider: openrouter
+model_id: google/gemini-3.6-flash
+base_url: https://openrouter.ai/api/v1
+
+routing:
+  # Keep these request settings aligned with gemini_3_6_flash_non_thinking.yaml.
+  require_parameters: true
+  allow_fallbacks: true
+
+reasoning:
+  # Gemini requires thinking; minimal is its non-thinking approximation.
+  enabled: true
+  effort: minimal
+  exclude_from_response: true
+
+generation:
+  assistant:
+    temperature: null
+    top_p: null
+    max_completion_tokens: 65536
+
+retry:
+  max_attempts: 3
+  initial_backoff_seconds: 1.0
+  maximum_backoff_seconds: 8.0
+
+memory:
+  # FIXED FOR THIS PROFILE: ExpRAG.
+  framework: exprag
+  # Each of the six evo conditions must use a distinct persistent memory file.
+  path: ../../runs/memory/gemini_3_6_flash_exprag.json
+  # Above 1100 and the current 1000-sample dev set, with seed-memory headroom.
+  max_entries: 2000
+  prune_oldest_when_full: true
+  store_successful_only: true
+  retrieval:
+    # OFFICIAL EVO-MEMORY ALIGNMENT: BGE embedding retrieval.
+    backend: sentence_transformers
+    top_k: 4
+    min_score: 0.0
+    # Bound the visible, latest-first per-turn retrieval query.
+    query_max_characters: 2048
+    embedding_model: BAAI/bge-base-en-v1.5
+    # Six tmux processes otherwise each auto-load a separate BGE copy on CUDA.
+    device: cpu
+    bm25_k1: 1.5
+    bm25_b: 0.75
+  context:
+    include_trajectory: true
+    include_feedback: true
+    max_characters: 8000
+  # Parsed for the shared memory schema but unused by ExpRAG.
+  remem:
+    max_iterations: 10
+    enable_pruning: true

@@ -173,3 +173,102 @@ async def test_report_writes_episode_and_two_decimal_aggregate_files(tmp_path) -
     assert '"avg_all_node_satisfaction_turns": 1.00' in aggregate_text
     assert '"avg_tokens": 10.00' in aggregate_text
     assert '"aitr": null' in aggregate_text
+
+
+async def test_unknown_visible_tokens_keep_episode_es_in_evaluation_and_reports(tmp_path):
+    from intent_metrics.deterministic import compute_dag_turn_metrics
+    from intent_metrics.evaluator import aggregate_metrics, evaluate_runs
+
+    run_dir, dataset = _write_fixture_run(tmp_path)
+    sample = json.loads(dataset.read_text())
+    sample["reason_dag"]["nodes"].insert(
+        1,
+        {
+            "node_id": "N2",
+            "node_type": "intent",
+            "node_intent": "Follow-up help.",
+        },
+    )
+    sample["reason_dag"]["edges"] = [
+        {"edge_id": "E1", "source": "N1", "target": "N2"},
+        {"edge_id": "E2", "source": "N2", "target": "END"},
+    ]
+    dataset.write_text(json.dumps(sample) + "\n")
+    events_path = run_dir / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    events.insert(
+        3,
+        {
+            "event_type": "nodes_exposed",
+            "turn_index": 1,
+            "payload": {"newly_exposed": ["N2"]},
+        },
+    )
+    for event in events:
+        if event["event_type"] == "assistant_generation_completed":
+            event["payload"]["llm_call"]["visible_response_tokens"] = None
+        if event["event_type"] == "satisfaction_applied":
+            event["payload"]["after"]["N2"] = "satisfied"
+    events_path.write_text("".join(json.dumps(event) + "\n" for event in events))
+
+    loader = TraceLoader()
+    dag = compute_dag_turn_metrics(loader.load(run_dir))
+    assert (dag.all_node_exposure_turn, dag.all_node_satisfaction_turn) == (1, 1)
+    result = await evaluate_runs([str(run_dir)], loader=loader)
+    assert len(result.records) == 1
+    assert result.failures == []
+    record = result.records[0]
+    assert record.assistant_tokens is None
+    assert "visible tokens unknown" in record.token_error
+    assert (record.all_node_exposure_turn, record.all_node_satisfaction_turn) == (1, 1)
+    summary = aggregate_metrics(result.records, result.failures)
+    assert summary["input_episode_count"] == summary["evaluated_episode_count"] == 1
+    hard = summary["models"]["fake/model"]["hard"]
+    assert hard["avg_all_node_exposure_turns"] == hard["avg_all_node_satisfaction_turns"] == 1.0
+    assert hard["avg_tokens"] is None
+    assert hard["diagnostics"]["token_missing_episode_count"] == 1
+    episode_path, aggregate_path, text_path = write_evaluation_outputs(tmp_path / "results", result)
+    saved_record = json.loads(episode_path.read_text())
+    assert saved_record["assistant_tokens"] is None and saved_record["token_error"]
+    assert json.loads(aggregate_path.read_text()) == summary
+    assert "1/1 evaluated" in text_path.read_text()
+    assert "token_missing_episodes=1" in text_path.read_text()
+
+
+async def test_dag_corruption_still_excludes_episode_even_with_unknown_tokens(tmp_path):
+    from intent_metrics.evaluator import evaluate_runs
+
+    run_dir, _ = _write_fixture_run(tmp_path)
+    path = run_dir / "events.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    for event in events:
+        if event["event_type"] == "assistant_generation_completed":
+            event["payload"]["llm_call"]["visible_response_tokens"] = None
+        if event["event_type"] == "satisfaction_applied":
+            event["payload"]["after"]["N1"] = "invalid satisfaction"
+    path.write_text("".join(json.dumps(event) + "\n" for event in events))
+    result = await evaluate_runs([str(run_dir)], loader=TraceLoader())
+    assert result.records == [] and len(result.failures) == 1
+    assert "invalid status" in result.failures[0].message
+
+
+def test_cli_preserves_es_outputs_when_token_counts_are_missing(tmp_path):
+    from typer.testing import CliRunner
+
+    from intent_metrics.cli import app
+
+    run_dir, _ = _write_fixture_run(tmp_path)
+    path = run_dir / "events.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    for event in events:
+        if event["event_type"] == "assistant_generation_completed":
+            event["payload"]["llm_call"]["visible_response_tokens"] = None
+    path.write_text("".join(json.dumps(event) + "\n" for event in events))
+    output_dir = tmp_path / "metrics-output"
+    result = CliRunner().invoke(app, [str(run_dir), "--skip-aitr", "--output-dir", str(output_dir)])
+    assert result.exit_code == 0, result.output
+    report = json.loads((output_dir / "aggregate_metrics.json").read_text())
+    assert report["evaluated_episode_count"] == report["input_episode_count"] == 1
+    assert report["evaluation_errors"] == []
+    assert report["models"]["fake/model"]["hard"]["avg_tokens"] is None
+    assert "their E/S metrics are retained" in result.output

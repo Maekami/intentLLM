@@ -8,7 +8,7 @@ from rich.panel import Panel
 from rich.pretty import Pretty
 
 from assistant.config import EnvironmentSettings, load_config
-from assistant.exceptions import ModelRequestError
+from assistant.exceptions import ConfigurationError, ModelRequestError
 from assistant.factory import build_assistant_components
 from assistant.session import AssistantSession
 
@@ -21,7 +21,21 @@ def main(
     baseline: str | None = typer.Option(
         None,
         "--baseline",
-        help="Baseline registry name: base or prompt_base.",
+        help=(
+            "Baseline registry name: base, prompt_base, goal_progression, interactcomp_react, or "
+            "trace2skill. base adds no Prompted-Base prompt; a model-profile-bound "
+            "skill remains active."
+        ),
+    ),
+    react_action_guard: bool | None = typer.Option(
+        None,
+        "--react-action-guard/--no-react-action-guard",
+        help="Toggle the second-layer semantic guard for interactcomp_react.",
+    ),
+    trace2skill_skill: Path | None = typer.Option(
+        None,
+        "--trace2skill-skill",
+        help="Generated SKILL.md path; use together with --baseline trace2skill.",
     ),
     model_profile: str | None = typer.Option(
         None,
@@ -42,13 +56,20 @@ def main(
     overrides: dict[str, Any] = {}
     if baseline:
         overrides.setdefault("components", {})["baseline"] = baseline
+    if react_action_guard is not None:
+        react_overrides = overrides.setdefault("interactcomp_react", {})
+        react_overrides.setdefault("action_guard", {})["enabled"] = react_action_guard
     if model_profile:
         overrides.setdefault("models", {})["assistant"] = model_profile
+    if trace2skill_skill is not None:
+        overrides.setdefault("prompts", {})["trace2skill"] = str(
+            trace2skill_skill.expanduser().resolve()
+        )
     resolved = load_config(config, cli_overrides=overrides)
     environment = EnvironmentSettings()
     try:
         components = build_assistant_components(config=resolved, environment=environment)
-    except ModelRequestError as exc:
+    except (ConfigurationError, ModelRequestError) as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(2)
     asyncio.run(_run(components.session, message=message))

@@ -1,0 +1,47 @@
+# Trace2Skill-Visible-Combined-Parallel-B32
+#
+# This configuration intentionally reuses the frozen 1,000-sample development
+# dataset without rewriting it. The analyzer receives only visible dialogue and
+# SUCCESS/FAILURE_TURN_LIMIT; all Reason-DAG and simulator internals stay in the
+# ordinary audit files and are never copied into model prompts.
+dataset:
+  path: ../user_simulator/dataset/DAG_evolution_dev.jsonl
+  original_path: ../user_simulator/dataset/DAG_evolution_dev_original.jsonl
+  metadata_path: ../user_simulator/dataset/DAG_evolution_dev_metadata.json
+  difficulty_field: difficulty
+  expected_sample_count: 1000
+  expected_difficulty_counts:
+    easy: 334
+    medium: 333
+    hard: 333
+
+run:
+  method: Trace2Skill-Visible-Combined-Parallel-B32
+  initial_skill: No Skill
+  information_boundary: visible_dialogue_plus_binary_outcome
+  analysis_mode: combined
+  map_batch_size: 1
+  merge_batch_size: 32
+  turn_budget: 20
+
+  # Collect uses this as the No-Skill interaction concurrency. Decoupled Build
+  # reuses the same bound as its trajectory-local analyst concurrency. It never
+  # introduces mini-batch learning dependencies in either stage.
+  trajectory_concurrency: 32
+  merge_concurrency: 8
+
+  # Total full-episode attempts, including the initial attempt. Only
+  # infrastructure failures are retried; turn-limit failures are valid labels.
+  infrastructure_max_attempts: 3
+
+  # Official parallel-evolver controls. A malformed/incomplete patch is handled
+  # in-conversation; provider transport failures still use the model profile's
+  # retry policy.
+  max_continuations: 2
+  format_fix_rounds: 2
+  max_merge_levels: 5
+  max_verification_rounds: 3
+  max_skill_lines: 500
+  seed: 42
+  output_dir: runs_trace2skill
+  group_output_by_profile: true

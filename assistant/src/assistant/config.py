@@ -68,6 +68,7 @@ class MemoryRetrievalSettings(BaseModel):
     backend: Literal["bm25", "sentence_transformers"] = "bm25"
     top_k: int = Field(default=4, ge=1)
     min_score: float = Field(default=0.0, ge=0.0)
+    query_max_characters: int = Field(default=2048, ge=1)
     embedding_model: str = Field(default="BAAI/bge-base-en-v1.5", min_length=1)
     device: str | None = None
     bm25_k1: float = Field(default=1.5, gt=0.0)
@@ -81,7 +82,7 @@ class MemoryContextSettings(BaseModel):
 
     include_trajectory: bool = True
     include_feedback: bool = True
-    max_characters: int = Field(default=8000, ge=256)
+    max_characters: int = Field(default=8000, ge=1)
 
 
 class ReMemSettings(BaseModel):
@@ -89,7 +90,7 @@ class ReMemSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    max_iterations: int = Field(default=10, ge=1, le=100)
+    max_iterations: int = Field(default=10, ge=1)
     enable_pruning: bool = True
 
 
@@ -108,6 +109,141 @@ class MemorySettings(BaseModel):
     remem: ReMemSettings = Field(default_factory=ReMemSettings)
 
 
+class SkillSettings(BaseModel):
+    """Optional static skill bound one-to-one to an assistant model profile."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    framework: Literal["trace2skill"] = "trace2skill"
+    path: Path
+
+
+GP_ERROR_CODES = frozenset({
+    "call.timeout", "call.rate_limit", "call.transient", "output.empty",
+    "output.truncated", "output.parse", "output.schema", "contract.reference",
+    "contract.coverage", "contract.dependency", "contract.request", "contract.action",
+    "context.missing", "context.capacity", "realization.unrealizable", "runtime.io",
+})
+GP_ROLES = frozenset({"tracker", "intra", "inter", "joint", "generator", "runtime"})
+
+
+class GPPolicySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_budget: int = Field(default=1, ge=0)
+    adjacent_candidate_limit: int = Field(default=2, ge=0)
+    max_adjacent_deliveries: int = Field(default=1, ge=0)
+
+
+class GPRoleBudget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_input_tokens: int | None = Field(default=None, ge=1)
+    expanded_input_tokens: int | None = Field(default=None, ge=1)
+    max_completion_tokens: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def bounds(self) -> Self:
+        if (self.expanded_input_tokens is not None and self.max_input_tokens is not None
+                and self.expanded_input_tokens < self.max_input_tokens):
+            raise ValueError("expanded_input_tokens must be >= max_input_tokens")
+        return self
+
+
+class GPContextSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    hard_context_tokens: int | None = Field(default=None, ge=1)
+    role_budgets: dict[str, GPRoleBudget] = Field(default_factory=dict)
+    estimator: Literal["provider_text_with_overhead", "utf8_upper_bound"] = (
+        "provider_text_with_overhead"
+    )
+    chat_overhead_tokens: int = Field(default=128, ge=0)
+    preserve_required_materials: Literal[True] = True
+
+    @model_validator(mode="after")
+    def roles(self) -> Self:
+        if self.role_budgets.keys() - (GP_ROLES - {"runtime"}):
+            raise ValueError("unknown GP context role")
+        return self
+
+
+class GPRecoverySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    default_max_retries: int = Field(default=3, ge=0, le=3)
+    by_role_and_code: dict[str, dict[str, int]] = Field(default_factory=dict)
+    call_timeout_seconds: float = Field(default=120, gt=0)
+    initial_backoff_seconds: float = Field(default=1, ge=0)
+    maximum_backoff_seconds: float = Field(default=8, ge=0)
+    output_growth_factor: float = Field(default=1.5, ge=1)
+    correction_max_characters: int = Field(default=2000, ge=1)
+
+    @model_validator(mode="after")
+    def limits(self) -> Self:
+        for role, overrides in self.by_role_and_code.items():
+            if role not in GP_ROLES:
+                raise ValueError(f"unknown GP recovery role: {role}")
+            for code, value in overrides.items():
+                if code not in GP_ERROR_CODES or type(value) is not int or not 0 <= value <= 3:
+                    raise ValueError("GP retries require a registered code and a limit in 0..3")
+        if self.maximum_backoff_seconds < self.initial_backoff_seconds:
+            raise ValueError("maximum_backoff_seconds must be >= initial_backoff_seconds")
+        return self
+
+
+class GPRealizationSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    output_format: Literal["json_units"] = "json_units"
+    request_rendering: Literal["frozen_block"] = "frozen_block"
+    separator: str = "\n\n"
+
+
+class GoalProgressionSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    variant: Literal["full", "no_tracker", "no_intra", "no_inter", "joint", "no_anticipate"]
+    architecture_version: Literal["v2_contracts"] = "v2_contracts"
+    prompts: dict[str, Path]
+    # Optional legacy alias for parse/schema only, never an extra retry loop.
+    format_retries: int | None = Field(default=None, ge=0, le=3)
+    turn_timeout_seconds: float = Field(default=300, gt=0)
+    max_in_flight_requests: int = Field(default=2, ge=1)
+    # Provider-side constrained decoding is separate from mandatory local contracts.
+    structured_decoding: dict[
+        Literal["tracker", "intra", "inter", "joint", "generator"],
+        Literal["schema", "prompt"],
+    ] = Field(default_factory=dict)
+    policy: GPPolicySettings = Field(default_factory=GPPolicySettings)
+    context: GPContextSettings = Field(default_factory=GPContextSettings)
+    recovery: GPRecoverySettings = Field(default_factory=GPRecoverySettings)
+    realization: GPRealizationSettings = Field(default_factory=GPRealizationSettings)
+
+    def retry_limit(self, role: str, code: str) -> int:
+        overrides = self.recovery.by_role_and_code.get(role, {})
+        if code in overrides:
+            return overrides[code]
+        if self.format_retries is not None and code in {"output.parse", "output.schema"}:
+            return self.format_retries
+        return self.recovery.default_max_retries
+
+    @property
+    def roles(self) -> tuple[str, ...]:
+        if self.variant == "joint":
+            return ("tracker", "joint", "generator")
+        return tuple(
+            role
+            for role in ("tracker", "intra", "inter", "generator")
+            if self.variant != f"no_{role}"
+        )
+
+    @model_validator(mode="after")
+    def validate_prompts(self) -> Self:
+        unknown = set(self.prompts) - {"tracker", "intra", "inter", "joint", "generator"}
+        missing = set(self.roles) - self.prompts.keys()
+        if unknown or missing:
+            raise ValueError(
+                f"invalid GP prompts: missing={sorted(missing)}, unknown={sorted(unknown)}"
+            )
+        return self
+
+
 class ModelProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -121,11 +257,25 @@ class ModelProfile(BaseModel):
     retry: RetrySettings
     # `null`/omitted preserves the original memory-free assistant behavior.
     memory: MemorySettings | None = None
+    # A profile-bound skill is activated on top of the unprompted base setting.
+    skill: SkillSettings | None = None
+    goal_progression: GoalProgressionSettings | None = None
 
     @model_validator(mode="after")
     def validate_assistant_generation(self) -> Self:
         if "assistant" not in self.generation:
             raise ValueError("model profile must define generation.assistant")
+        if self.memory is not None and self.skill is not None:
+            raise ValueError("a model profile cannot enable memory and a static skill together")
+        if self.goal_progression is not None:
+            if self.memory is not None or self.skill is not None:
+                raise ValueError("goal_progression cannot be combined with memory or skill")
+            for role in self.goal_progression.roles:
+                key = "assistant" if role == "generator" else role
+                if key not in self.generation:
+                    raise ValueError(f"goal_progression requires generation.{key}")
+                if any(value is None for value in self.generation[key].model_dump().values()):
+                    raise ValueError(f"goal_progression requires complete generation.{key}")
         return self
 
 
@@ -134,12 +284,57 @@ class ComponentSettings(BaseModel):
 
     assistant: str = "llm_assistant"
     baseline: str = "base"
+    # Trace2Skill authoring disables this so all development rollouts use No Skill.
+    profile_skill_enabled: bool = True
+
+
+class InteractCompActionGuardSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # False is the compatibility default for historical resolved snapshots.
+    # The shipped assistant.yaml explicitly enables the current baseline.
+    enabled: bool = False
+    # InteractComp routes AskNL validation through its responder/user model and
+    # overrides that model's temperature to 1.0. The pipeline supplies the
+    # simulator model client; these settings are therefore intentionally shared
+    # across every tested assistant profile.
+    generation: GenerationSettings = Field(
+        default_factory=lambda: GenerationSettings(
+            temperature=1.0,
+            top_p=1.0,
+            max_completion_tokens=2048,
+        )
+    )
+    # Official AskNL validation makes one independent decision per action.
+    # These compatibility switches stay configurable but are disabled in the
+    # official-aligned baseline.
+    confirm_rejections: bool = False
+    cache_verdicts: bool = False
+    invalid_output_retries: int = Field(default=0, ge=0)
+
+
+class InteractCompReActSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Official InteractComp permits ten action rounds per task. In this
+    # non-terminal dialogue adaptation those rounds are local semantic slots
+    # inside one simulator-visible turn; only an accepted action is published.
+    semantic_action_budget_per_turn: int = Field(default=10, ge=1)
+    # Matches official max_invalid_retries=3: first format attempt plus at most
+    # three retries, without advancing the semantic action slot.
+    format_retries_per_slot: int = Field(default=3, ge=0)
+    action_guard: InteractCompActionGuardSettings = Field(
+        default_factory=InteractCompActionGuardSettings
+    )
 
 
 class PromptSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     prompt_base: str
+    interactcomp_react: str = "configs/prompts/interactcomp_react.yaml"
+    interactcomp_action_guard: str = "configs/prompts/interactcomp_action_guard.yaml"
+    trace2skill: str = "configs/skills/trace2skill/SKILL.md"
 
 
 class AssistantConfig(BaseModel):
@@ -148,6 +343,7 @@ class AssistantConfig(BaseModel):
     components: ComponentSettings
     prompts: PromptSettings
     models: dict[str, str]
+    interactcomp_react: InteractCompReActSettings = Field(default_factory=InteractCompReActSettings)
 
     @model_validator(mode="after")
     def validate_assistant_model(self) -> Self:
@@ -215,9 +411,24 @@ def load_model_profile(
     if overrides:
         raw = _deep_merge(raw, overrides)
     profile = ModelProfile.model_validate(raw)
+    if profile.goal_progression is not None:
+        settings = profile.goal_progression.model_copy(
+            update={
+                "prompts": {
+                    role: prompt if prompt.is_absolute() else (path.parent / prompt).resolve()
+                    for role, prompt in profile.goal_progression.prompts.items()
+                }
+            }
+        )
+        profile = profile.model_copy(update={"goal_progression": settings})
     if profile.memory is not None and not profile.memory.path.is_absolute():
         memory = profile.memory.model_copy(
             update={"path": (path.parent / profile.memory.path).resolve()}
         )
         profile = profile.model_copy(update={"memory": memory})
+    if profile.skill is not None and not profile.skill.path.is_absolute():
+        skill = profile.skill.model_copy(
+            update={"path": (path.parent / profile.skill.path).resolve()}
+        )
+        profile = profile.model_copy(update={"skill": skill})
     return profile

@@ -1,0 +1,35 @@
+# Local-vLLM Qwen3.6-27B non-thinking profile for InteractComp ReAct.
+# Model, reasoning, assistant generation, and retry settings match the Qwen
+# ExpRAG/ReMem/Trace2Skill profiles. The guard is injected separately from the
+# unified --simulator-model-profile and never uses this assistant model.
+profile_name: qwen_3_6_27b_react
+provider: vllm
+model_id: qwen3.6-27b
+base_url: http://127.0.0.1:8001/v1
+
+routing: {}
+
+reasoning:
+  enabled: false
+  effort: null
+  exclude_from_response: true
+  local_chat_template:
+    enable_thinking: false
+    preserve_thinking: false
+
+generation:
+  assistant:
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 1.5
+    repetition_penalty: 1.0
+    max_completion_tokens: 32768
+retry:
+  max_attempts: 3
+  initial_backoff_seconds: 1.0
+  maximum_backoff_seconds: 8.0
+
+memory: null
+skill: null

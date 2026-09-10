@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+visible-tokens = ["tokenizers>=0.20"]
 
 [project.scripts]
 intent-metrics = "intent_metrics.cli:app"

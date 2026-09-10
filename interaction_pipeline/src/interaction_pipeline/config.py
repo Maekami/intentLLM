@@ -23,6 +23,7 @@ class RunSettings(BaseModel):
     seed: int = 42
     concurrency: int = Field(default=4, ge=1)
     sample_retries: int = Field(default=3, ge=0)
+    update_memory: bool = True
     output_dir: str = "runs"
     audit_level: Literal["summary", "full"] = "full"
 

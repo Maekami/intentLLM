@@ -1,29 +1,31 @@
-# Qwen3.6-27B thinking profile with the Evo-Memory ExpRAG framework enabled.
+# Local-vLLM Qwen3.6-27B non-thinking profile with Evo-Memory ExpRAG enabled.
 profile_name: qwen_3_6_27b_exprag
-provider: openrouter
-model_id: qwen/qwen3.6-27b
-base_url: https://openrouter.ai/api/v1
+provider: vllm
+# Must match `--served-model-name` from the local `vllm serve` command.
+model_id: qwen3.6-27b
+# Keep aligned with qwen_3_6_27b_vllm_non_thinking.yaml; adjust if the service uses another port.
+base_url: http://127.0.0.1:8001/v1
 
-routing:
-  require_parameters: true
-  allow_fallbacks: true
+# OpenRouter-only routing options are intentionally empty for local vLLM.
+routing: {}
 
 reasoning:
-  # Keep these values aligned with qwen_3_6_27b.yaml.
-  enabled: true
+  # Keep exactly aligned with qwen_3_6_27b_vllm_non_thinking.yaml.
+  enabled: false
   effort: null
-  exclude_from_response: false
+  exclude_from_response: true
   local_chat_template:
-    enable_thinking: true
-    preserve_thinking: true
+    enable_thinking: false
+    preserve_thinking: false
 
 generation:
   assistant:
-    temperature: 1.0
-    top_p: 0.95
+    # Official Qwen instruct/non-thinking sampling parameters.
+    temperature: 0.7
+    top_p: 0.8
     top_k: 20
     min_p: 0.0
-    presence_penalty: 0.0
+    presence_penalty: 1.5
     repetition_penalty: 1.0
     max_completion_tokens: 32768
 
@@ -39,25 +41,29 @@ memory:
   # ADJUSTABLE: relative paths are resolved from this YAML file. Use a distinct
   # file per experiment stream to avoid carrying experience across conditions.
   path: ../../runs/memory/qwen_3_6_27b_exprag.json
-  # ADJUSTABLE: integer >= 1. The official reference default is 1000.
-  max_entries: 1000
+  # ADJUSTABLE: kept above 1100 (and above the current 1000-sample dev set),
+  # with headroom for seed memories. The official reference default is 1000.
+  max_entries: 2000
   # ADJUSTABLE: true drops oldest entries at capacity; false stops adding.
   prune_oldest_when_full: true
   # ADJUSTABLE: true matches the official agent default and only learns from
   # pipeline episodes that terminate successfully.
   store_successful_only: true
   retrieval:
-    # ADJUSTABLE: bm25 | sentence_transformers. BM25 needs no extra package;
-    # sentence_transformers matches the reference embedding-retrieval path.
-    backend: bm25
+    # OFFICIAL EVO-MEMORY ALIGNMENT: BGE embedding retrieval through
+    # sentence-transformers (rather than the dependency-free BM25 fallback).
+    backend: sentence_transformers
     # ADJUSTABLE: integer >= 1. The paper/reference default is 4.
     top_k: 4
     # ADJUSTABLE: score >= 0. Score scales differ between the two backends.
     min_score: 0.0
+    # ADJUSTABLE: bound the visible, latest-first per-turn retrieval query.
+    query_max_characters: 2048
     # USED ONLY by sentence_transformers; this is the reference default model.
     embedding_model: BAAI/bge-base-en-v1.5
-    # ADJUSTABLE: null for automatic placement, or e.g. cpu/cuda.
-    device: null
+    # Keep six independent evo processes off the local assistant GPU. CPU and
+    # CUDA use the same BGE/cosine retrieval algorithm.
+    device: cpu
     # USED ONLY by bm25.
     bm25_k1: 1.5
     bm25_b: 0.75

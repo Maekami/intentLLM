@@ -8,4 +8,6 @@ dist/
 build/
 !runs/.gitkeep
 runs
-dataset/thoughttrace_3plus_no_dag
+# Only the canonical dataset belongs in the Git backup.
+/dataset/*
+!/dataset/DAG.jsonl

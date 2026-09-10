@@ -9,3 +9,5 @@ dist/
 *.egg-info/
 runs/memory/*
 !runs/memory/.gitkeep
+runs/skills/*
+proposal_artifacts/

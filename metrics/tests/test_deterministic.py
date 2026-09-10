@@ -142,3 +142,24 @@ def test_tokens_fall_back_to_answer_plus_thinking() -> None:
     result = compute_assistant_tokens(trace)
     assert result.assistant_tokens == 100
     assert result.fallback_turns == (1,)
+
+
+def test_delivered_text_tokens_ignore_internal_calls_and_sum_turns():
+    events = []
+    for turn, tokens, calls in [(1, 7, 4), (2, 11, 9)]:
+        current = turn_events(turn, after={'N1': 'satisfied'}, output_tokens=9999)
+        current[0]['payload']['llm_call'].update(
+            visible_response_tokens=tokens, internal_call_count=calls,
+            goal_progression={'calls': [{'output_tokens': 10000}] * calls},
+        )
+        events.extend(current)
+    assert compute_assistant_tokens(make_trace(events=events, turns=2)).assistant_tokens == 18
+
+
+def test_unknown_visible_tokens_never_fall_back_to_internal_usage():
+    import pytest
+    from intent_metrics.errors import MetricDataError
+    events = turn_events(1, after={'N1': 'satisfied'}, output_tokens=9999)
+    events[0]['payload']['llm_call']['visible_response_tokens'] = None
+    with pytest.raises(MetricDataError, match='visible tokens unknown'):
+        compute_assistant_tokens(make_trace(events=events, turns=1))

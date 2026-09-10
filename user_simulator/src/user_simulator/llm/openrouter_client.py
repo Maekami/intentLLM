@@ -1,6 +1,9 @@
 import asyncio
 import json
+import random
 import time
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, TypeVar
 
 from openai import (
@@ -13,7 +16,12 @@ from openai import (
 from pydantic import BaseModel, ValidationError
 
 from user_simulator.audit.logger import read_git_commit
-from user_simulator.config import EnvironmentSettings, GenerationSettings, ModelProfile
+from user_simulator.config import (
+    EnvironmentSettings,
+    GenerationSettings,
+    ModelProfile,
+    RateLimitRetrySettings,
+)
 from user_simulator.exceptions import (
     ModelRequestError,
     OpenRouterRequestError,
@@ -38,11 +46,16 @@ class OpenRouterStructuredClient:
             self.client = client
         else:
             api_key, headers = self._connection_settings()
-            self.client = AsyncOpenAI(
-                api_key=api_key,
-                base_url=profile.base_url,
-                default_headers=headers,
-            )
+            client_options: dict[str, Any] = {
+                "api_key": api_key,
+                "base_url": profile.base_url,
+                "default_headers": headers,
+            }
+            if profile.retry.rate_limit is not None:
+                # Keep 429 retries in this auditable client layer. Otherwise
+                # the SDK adds hidden retries on top of the dedicated budget.
+                client_options["max_retries"] = 0
+            self.client = AsyncOpenAI(**client_options)
         self.last_call_metadata: dict[str, Any] = {}
         self.git_commit = read_git_commit()
 
@@ -84,6 +97,12 @@ class OpenRouterStructuredClient:
         last_invalid_content: str | None = None
         transport_retry_count = 0
         structured_retry_count = 0
+        rate_limit_attempt_count = 0
+        rate_limit_retry_count = 0
+        rate_limit_wait_seconds = 0.0
+        last_rate_limit_type: str | None = None
+        total_attempt_count = 0
+        ordinary_attempt_count = 0
         structured_correction = ""
         request_messages = messages
         reasoning_settings = generation.reasoning or self.profile.reasoning
@@ -92,22 +111,30 @@ class OpenRouterStructuredClient:
             if reasoning_settings.effort is not None:
                 reasoning["effort"] = reasoning_settings.effort
             reasoning["exclude"] = reasoning_settings.exclude_from_response
-        for attempt in range(1, retry.max_attempts + 1):
+        while True:
+            total_attempt_count += 1
             started = time.perf_counter()
             request_messages = _with_structured_correction(
                 messages,
                 structured_correction,
                 last_invalid_content,
             )
+            if structured.transport == "json_object":
+                request_messages = _with_json_object_contract(
+                    request_messages,
+                    schema_name=schema_name,
+                    request_schema=request_schema,
+                )
             retry_kind = "structured"
             content: Any = None
             try:
                 extra_body: dict[str, Any] = {}
                 if self.profile.provider == "openrouter":
+                    provider_routing = self.profile.routing.model_dump(exclude_none=True)
                     extra_body.update(
                         {
                             "provider": {
-                                **self.profile.routing,
+                                **provider_routing,
                                 "require_parameters": structured.require_parameters,
                             },
                             "reasoning": reasoning,
@@ -123,6 +150,13 @@ class OpenRouterStructuredClient:
                     value = getattr(generation, key)
                     if value is not None:
                         extra_body[key] = value
+                response_format: dict[str, Any] = {"type": structured.transport}
+                if structured.transport == "json_schema":
+                    response_format["json_schema"] = {
+                        "name": schema_name,
+                        "strict": structured.strict,
+                        "schema": request_schema,
+                    }
                 request_options: dict[str, Any] = {
                     "model": self.profile.model_id,
                     "messages": request_messages,
@@ -133,14 +167,7 @@ class OpenRouterStructuredClient:
                     # otherwise-compatible endpoint.
                     "max_tokens": generation.max_completion_tokens,
                     "stream": False,
-                    "response_format": {
-                        "type": structured.type,
-                        "json_schema": {
-                            "name": schema_name,
-                            "strict": structured.strict,
-                            "schema": request_schema,
-                        },
-                    },
+                    "response_format": response_format,
                     "extra_body": extra_body,
                 }
                 # Some reasoning models (including GPT-5.6 Luna on OpenRouter)
@@ -194,6 +221,9 @@ class OpenRouterStructuredClient:
                     "schema_name": schema_name,
                     "schema_hash": request_schema_hash,
                     "structured_output_type": structured.type,
+                    "structured_output_transport": structured.transport,
+                    "provider_schema_enforced": structured.transport == "json_schema",
+                    "local_schema_validation": True,
                     "strict": structured.strict,
                     "require_parameters": structured.require_parameters,
                     "response_healing": structured.response_healing,
@@ -202,8 +232,12 @@ class OpenRouterStructuredClient:
                     "provider": last_provider,
                     "finish_reason": finish_reason,
                     "latency_seconds": last_latency_seconds,
+                    "request_attempt_count": total_attempt_count,
                     "transport_retry_count": transport_retry_count,
                     "structured_retry_count": structured_retry_count,
+                    "rate_limit_retry_count": rate_limit_retry_count,
+                    "rate_limit_wait_seconds": rate_limit_wait_seconds,
+                    "last_rate_limit_type": last_rate_limit_type,
                     "structured_validation_status": "valid",
                     "input_tokens": input_tokens,
                     # OpenRouter includes reasoning/thinking tokens in completion_tokens.
@@ -231,27 +265,55 @@ class OpenRouterStructuredClient:
                 detail = str(exc)
                 last_error = StructuredOutputError(detail)
                 structured_correction = _structured_correction(detail)
-            except (APIConnectionError, APITimeoutError, RateLimitError, TimeoutError) as exc:
+            except RateLimitError as exc:
+                last_error = exc
+                retry_kind = "rate_limit"
+                last_provider = _rate_limit_provider(exc) or last_provider
+            except (APIConnectionError, APITimeoutError, TimeoutError) as exc:
                 last_error = exc
                 retry_kind = "transport"
             except APIStatusError as exc:
-                if exc.status_code < 500:
+                if exc.status_code == 429:
+                    last_error = exc
+                    retry_kind = "rate_limit"
+                    last_provider = _rate_limit_provider(exc) or last_provider
+                elif exc.status_code < 500:
                     raise self._request_error(
                         f"rejected the request with HTTP {exc.status_code}: {exc}"
                     ) from exc
-                last_error = exc
-                retry_kind = "transport"
-            last_latency_seconds = time.perf_counter() - started
-            if attempt < retry.max_attempts:
-                if retry_kind == "transport":
-                    transport_retry_count += 1
                 else:
-                    structured_retry_count += 1
-                delay = min(
-                    retry.initial_backoff_seconds * (2 ** (attempt - 1)),
-                    retry.maximum_backoff_seconds,
+                    last_error = exc
+                    retry_kind = "transport"
+            last_latency_seconds = time.perf_counter() - started
+            if retry_kind == "rate_limit" and retry.rate_limit is not None:
+                rate_limit_attempt_count += 1
+                last_rate_limit_type = _rate_limit_type(last_error)
+                if rate_limit_attempt_count >= retry.rate_limit.max_attempts:
+                    break
+                rate_limit_retry_count += 1
+                transport_retry_count += 1
+                delay = _rate_limit_retry_delay(
+                    retry.rate_limit,
+                    last_rate_limit_type,
+                    rate_limit_retry_count,
+                    last_error,
                 )
+                rate_limit_wait_seconds += delay
                 await asyncio.sleep(delay)
+                continue
+
+            ordinary_attempt_count += 1
+            if ordinary_attempt_count >= retry.max_attempts:
+                break
+            if retry_kind in {"transport", "rate_limit"}:
+                transport_retry_count += 1
+            else:
+                structured_retry_count += 1
+            delay = min(
+                retry.initial_backoff_seconds * (2 ** (ordinary_attempt_count - 1)),
+                retry.maximum_backoff_seconds,
+            )
+            await asyncio.sleep(delay)
         structured_validation_status = (
             "invalid" if isinstance(last_error, StructuredOutputError) else "not_run"
         )
@@ -263,6 +325,9 @@ class OpenRouterStructuredClient:
             "schema_name": schema_name,
             "schema_hash": request_schema_hash,
             "structured_output_type": structured.type,
+            "structured_output_transport": structured.transport,
+            "provider_schema_enforced": structured.transport == "json_schema",
+            "local_schema_validation": True,
             "strict": structured.strict,
             "require_parameters": structured.require_parameters,
             "response_healing": structured.response_healing,
@@ -270,8 +335,12 @@ class OpenRouterStructuredClient:
             "request_id": last_request_id,
             "provider": last_provider,
             "latency_seconds": last_latency_seconds,
+            "request_attempt_count": total_attempt_count,
             "transport_retry_count": transport_retry_count,
             "structured_retry_count": structured_retry_count,
+            "rate_limit_retry_count": rate_limit_retry_count,
+            "rate_limit_wait_seconds": rate_limit_wait_seconds,
+            "last_rate_limit_type": last_rate_limit_type,
             "structured_validation_status": structured_validation_status,
             "finish_reason": last_finish_reason,
             "refusal": last_refusal,
@@ -283,13 +352,83 @@ class OpenRouterStructuredClient:
         if isinstance(last_error, StructuredOutputError):
             raise last_error
         raise self._request_error(
-            f"request failed after {retry.max_attempts} attempts: {last_error}"
+            f"request failed after {total_attempt_count} attempts: {last_error}"
         ) from last_error
 
     def _request_error(self, detail: str) -> ModelRequestError:
         if self.profile.provider == "openrouter":
             return OpenRouterRequestError(f"OpenRouter {detail}")
         return ModelRequestError(f"Local OpenAI-compatible server {detail}")
+
+
+def _rate_limit_metadata(exc: Exception | None) -> dict[str, Any]:
+    body = getattr(exc, "body", None)
+    if not isinstance(body, dict):
+        return {}
+    error = body.get("error", body)
+    if not isinstance(error, dict):
+        return {}
+    metadata = error.get("metadata", {})
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _rate_limit_type(exc: Exception | None) -> str:
+    metadata = _rate_limit_metadata(exc)
+    provider_code = str(metadata.get("provider_error_code", "")).lower()
+    searchable = f"{provider_code} {getattr(exc, 'body', '')} {exc}".lower()
+    if "rpm_rate_limit_exceeded" in searchable or "rpm" in provider_code:
+        return "rpm"
+    if "tpm_rate_limit_exceeded" in searchable or "tpm" in provider_code:
+        return "tpm"
+    return "generic"
+
+
+def _rate_limit_provider(exc: Exception | None) -> str | None:
+    provider = _rate_limit_metadata(exc).get("provider_name")
+    return str(provider) if provider else None
+
+
+def _retry_after_seconds(exc: Exception | None) -> float | None:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    raw_value = headers.get("retry-after")
+    if raw_value is None:
+        return None
+    try:
+        return max(0.0, float(raw_value))
+    except (TypeError, ValueError):
+        try:
+            retry_at = parsedate_to_datetime(str(raw_value))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
+
+
+def _rate_limit_retry_delay(
+    settings: RateLimitRetrySettings,
+    limit_type: str,
+    retry_number: int,
+    exc: Exception | None,
+) -> float:
+    initial = {
+        "rpm": settings.rpm_initial_backoff_seconds,
+        "tpm": settings.tpm_initial_backoff_seconds,
+    }.get(limit_type, settings.generic_initial_backoff_seconds)
+    exponential_delay = min(
+        initial * (2 ** (retry_number - 1)),
+        settings.maximum_backoff_seconds,
+    )
+    delay_floor = exponential_delay
+    if settings.honor_retry_after:
+        retry_after = _retry_after_seconds(exc)
+        if retry_after is not None:
+            delay_floor = max(delay_floor, retry_after)
+    jitter = random.uniform(0.0, delay_floor * settings.jitter_ratio)
+    return delay_floor + jitter
 
 
 def _with_structured_correction(
@@ -304,6 +443,35 @@ def _with_structured_correction(
         copied.append({"role": "assistant", "content": invalid_content})
     copied.append({"role": "user", "content": correction})
     return copied
+
+
+def _with_json_object_contract(
+    messages: list[dict[str, str]],
+    *,
+    schema_name: str,
+    request_schema: dict[str, Any],
+) -> list[dict[str, str]]:
+    """Expose the local schema to JSON Object endpoints without mutating prompts."""
+
+    schema_json = json.dumps(
+        request_schema,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    instruction = (
+        "JSON OBJECT CONTRACT\n"
+        "Return only one valid JSON object matching the following JSON Schema exactly. "
+        "Include every required field, obey enum and null constraints, and add no extra "
+        f"fields. Contract name: {schema_name}. JSON Schema: {schema_json}"
+    )
+    copied = [dict(message) for message in messages]
+    for index, message in enumerate(copied):
+        if message.get("role") != "system":
+            continue
+        copied[index]["content"] = f"{message.get('content', '').rstrip()}\n\n{instruction}"
+        return copied
+    return [{"role": "system", "content": instruction}, *copied]
 
 
 def _structured_error_detail(exc: ValidationError) -> str:

@@ -35,7 +35,7 @@ class AITRConfig(ModelProfile):
                 "retry.maximum_backoff_seconds must be greater than or equal to "
                 "retry.initial_backoff_seconds"
             )
-        if self.routing.get("require_parameters") is not True:
+        if self.routing.require_parameters is not True:
             raise ValueError("routing.require_parameters must be true for strict AITR output")
         return self
 

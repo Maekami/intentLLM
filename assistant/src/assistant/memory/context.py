@@ -6,10 +6,9 @@ from assistant.config import MemoryContextSettings
 from assistant.memory.models import RetrievalResult
 
 REMEM_SYSTEM_PROMPT = """You are a helpful assistant with access to LOCAL EXPERIENCE MEMORY.
-Use a Think-Refine-Act loop:
-- Think: reason internally about the current request.
-- Think-Prune: remove irrelevant retrieved memories by their displayed IDs.
-- Final Answer: provide the answer that should be shown to the user.
+Use a Think-Refine-Act loop. At each internal iteration, select exactly one
+operation: Think, Think-Prune, or Final Answer. Never combine operations in a
+single response, and do not prefix an operation with a Markdown list marker.
 
 Use relevant memories as prior task experience and prune memories that do not help."""
 
@@ -81,10 +80,20 @@ def build_remem_context(
         )
     parts.append(f"CURRENT USER REQUEST:\n{query}")
     parts.append(
-        """Respond in exactly one of these formats:
-- Think: <internal reasoning>
-- Think-Prune: <memory IDs, such as 1,3 or 2-4>
-- Final Answer: <the complete user-visible answer>"""
+        """==================================================
+OUTPUT FORMAT
+==================================================
+You MUST respond in EXACTLY ONE of these formats.
+Do not prefix the selected format with a Markdown list marker.
+
+Format 1 - Prune memories:
+Think-Prune: <memory IDs, such as 1,3 or 2-4>
+
+Format 2 - Internal reasoning:
+Think: <internal reasoning>
+
+Format 3 - Respond to the user:
+Final Answer: <the complete user-visible answer>"""
     )
     return "\n\n".join(parts)
 
