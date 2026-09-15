@@ -531,82 +531,59 @@ OpenRouter/vLLM 调用方式。记忆文件采用可人工审计的格式化 JSO
 - [Evo-Memory 论文（arXiv）](https://arxiv.org/abs/2511.20857)
 - [Evo-Memory 官方参考代码](https://github.com/zhaosnw/evo_mem)
 
-## Goal-Progression 静态系统
+## Goal-Progression 静态系统（当前 R20 Format）
 
-`goal_progression` 已接入现有 factory、demo 和 interaction pipeline。Full 使用
-Tracker → 并行 Intra/Inter → 确定性 Assembler → Generator；所有角色复用本地 Qwen
-非 thinking 部署。当前交付 required、相邻推进 optional，默认一个独立问题且当前问题优先。
-五份角色提示位于 `configs/prompts/gp_*.yaml`，详细语义见 [plan.md](plan.md)。
+当前执行先读 [CURRENT_STATE](../CURRENT_STATE.md) 和 [V4 Static 任务书](plan_v4_static.md)。活动运行代码仍是经核验的 R20 Format；V4 的 Actor–Validator 尚待在独占工作区 `runs_batch_qwen_full/gp_v4/static/` 实现，后续 agent 的全部写入限于该目录。真实实验最多 30 批，允许两个 API key 同时运行两批；Evo 暂停。[V3 文档、代码副本与结果](../v3/README.md) 已整体归档，V2.6 与全量实验见 [v2_6](../v2_6/README.md)。下方通用接口示例不是要求在主目录启动 V4。
 
-| variant | 模型 profile | 正常 LLM 调用数/轮 |
-| --- | --- | --- |
-| full | qwen_3_6_27b_gp | 4 |
-| no_tracker | qwen_3_6_27b_gp_no_tracker | 3 |
-| no_intra | qwen_3_6_27b_gp_no_intra | 3 |
-| no_inter | qwen_3_6_27b_gp_no_inter | 3 |
-| joint | qwen_3_6_27b_gp_joint | 3 |
-| no_anticipate | qwen_3_6_27b_gp_no_anticipate | 4 |
+`goal_progression`通过现有factory与interaction pipeline使用。用户在v2.6阶段结束后明确指定 **R20 Format** 为主版本：R20逻辑与profile保持不变，仅接入四个已冻结的格式整理prompt，架构仍为`v2_contracts`，profile仍为`qwen_3_6_27b_gp`。默认数据改为`DAG_fixed.jsonl`，已完成全292样本四次实验，两个key各两次，共1168次尝试，sample_retries=0。四次均值E/S为4.5348/6.0649；每样本按S最小、再E最小选择完整轨迹后为3.5308/4.7808（287 SUCCESS、5超限）。接入后352项assistant测试通过（14.59s），独立统计复核通过；见[全量最终结果](../v2_6/runs_batch_qwen_full/r20_format_full292/RESULTS.md)。[v2.6结论](../v2_6/runs_batch_qwen_full/gp_v2_6/RESULTS.md)保留为历史证据。
 
-必须同时选择 `--baseline goal_progression` 和 GP profile；它与其他 baseline、memory、skill
-互斥。禁用角色不调用、不加载提示；完整可见历史在六个设置中都保留。Generator 参数沿用
-`qwen_3_6_27b_vllm_non_thinking`，其他角色使用各自完整 generation 设置。
+Full主路径为Tracker → Intra / Inter并行 → Generator：正常有候选和正文时四次模型调用、三个串行阶段。Tracker维护可见目标、Need、约束与来源；Intra覆盖当前结果，Inter至多选择一个后续目标；Assembler检查引用/依赖、当前请求优先、去重和预算。Renderer拼接获批正文并追加冻结问题；可见历史、语义状态、请求台账和回执原子提交。失败草稿与prepared回执不代表用户收到回复。
 
-会话内 history 与 Tracker 状态成功后一起提交；Generator 失败不提交。Tracker 失败时保守
-生成并使状态失效；Intra/Joint 失败时停用相邻推进；Inter 失败保留当前计划。每个结构化
-角色的格式重试次数由 profile 的 `goal_progression.format_retries` 决定：0 表示不重试，
-配置 N 表示首次尝试后最多重试 N 次；当前六份配置均为 3，代码不设实验性上限。
-传输重试沿用 profile，GP 关闭 SDK 隐式重试；整轮超时由 `turn_timeout_seconds` 控制。
-同一 asyncio loop 中 GP 请求按 provider/base_url/model 共用上限；六份 Qwen GP 配置均为 32（通用配置类缺省仍为 2）；并行运行的
-同一服务不能设置互相矛盾的上限。reset 清空会话，replace_history 触发状态重建，
-finalize_task 不学习。
+当前Full实际配置：
 
-配置中的默认值不是固定实验约束。GP 并发可设为任意正整数（1 表示请求串行），重试次数
-可设为任意非负整数；各角色生成参数、超时、ReAct/ReMem 的次数预算和记忆长度预算均按
-配置执行。仍保留类型、正负值、概率范围及字段间一致性等合法性检查；服务端自身限制
-仍然适用。增加重试可能增加耗时，必要时同时调整整轮超时；运行中的会话不会自动热加载 YAML。
+| 字段 | 值 / 含义 |
+| --- | --- |
+| architecture_version / variant | v2_contracts / full |
+| policy.adjacent_candidate_limit | 2，活跃相邻候选上限 |
+| policy.max_adjacent_deliveries | 1，相邻正文单元上限 |
+| policy.request_budget | 1，全局独立请求预算，当前优先 |
+| structured_decoding.generator | prompt，普通JSON生成后强制本地schema、引用、单元覆盖校验 |
+| realization.output_format | json_units，正文单元JSON；Renderer请求使用frozen_block |
+| recovery.default_max_retries | 每回合每owner/code首次失败后的额外3次，合法范围0–3，可按角色与错误覆盖 |
+| retry.max_attempts | 1，底层单调用总尝试次数；与组件修复及episode重跑分开 |
+| recovery.call_timeout_seconds / turn_timeout_seconds | 180 / 900秒 |
+| max_in_flight_requests | 32，GP请求并发；不同于batch的episode并发 |
+| context.hard_context_tokens | 262144；角色软预算/扩容预算分别配置，不静默删必要原文 |
 
-结构化角色发送服务端 JSON Schema 并保留本地引用/覆盖校验；Generator 仍输出纯文本。
-完整对话封装为 observation JSON，角色 operation 在数据之后；私有状态不成为真实用户发言。
-GP prompt YAML 包含 system/operation，Generator 另有 repetition_operation；联合 hash 和
-全部提示进入快照。可见回复高度重复时触发确定性组装处理，原计划和触发标记保留审计。
+其他启用结构化角色默认发送服务端schema，同时做本地校验。Generator虽采用prompt解码，也不能放行非法JSON或未知引用。正常停滞与缺少用户材料由正常策略处理；内部错误按所有权恢复，不能靠删除受影响的required工作冒充成功。当前R20没有v2.6新增的Goal.progress、max_adjacent_goals或额外执行反馈窗口。
 
-从仓库根目录运行离线验收（不请求模型）：
+必须同时选择baseline和对应GP profile；GP与其他baseline、memory、skill不混用。本次Base仍使用既有 `prompt_base` + `qwen_3_6_27b_vllm_non_thinking`。历史no_tracker/no_intra/no_inter/joint/no_anticipate profile随R20原件恢复，其旧实验含义和结果见 [CURRENT_STATE](../CURRENT_STATE.md)；它们不是本轮v2.6单因素消融。
+
+从仓库根目录运行assistant离线验收（不请求真实模型）：
 
 ```bash
-export PYTHONPATH="$PWD/interaction_pipeline/src:$PWD/assistant/src:$PWD/user_simulator/src:$PWD/metrics/src${PYTHONPATH:+:$PYTHONPATH}"
-python -m pytest assistant/tests/unit interaction_pipeline/tests metrics/tests \
-  assistant/tests/integration/test_openrouter_protocol.py -q --asyncio-mode=auto
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH=assistant/src:interaction_pipeline/src:user_simulator/src:metrics/src \
+python -m pytest -q assistant/tests
 ```
 
-上述 protocol 文件使用假 SDK/HTTP transport；不要据此自动运行其他真实模型 integration 测试。
-状态 fixtures 验证结构、来源轮次、覆盖/恢复状态的传递和事务；不证明真实模型的语义识别正确。
-no_anticipate 在 schema、Inter 和 Generator 提示中同步限制，仍需在真实回复中检查行为遵从。
+这些合成和假模型测试验证协议、来源、恢复与事务，不证明真实模型一定正确完成工作，也不代表全仓库测试通过。
 
-用户启动的 Full 单样本 smoke（需已运行的 vLLM 服务和 simulator 凭据）：
+获准的新实验可沿用既有batch入口。下面仅说明R20的启动方式，不追加本阶段额度；必须使用新的输出目录：
 
 ```bash
+PYTHONPATH=assistant/src:interaction_pipeline/src:user_simulator/src:metrics/src \
 python -m interaction_pipeline.cli.batch \
-  --sample-id user20_task1_conversation1 \
+  --all --limit 16 \
   --baseline goal_progression --assistant-model-profile qwen_3_6_27b_gp \
   --simulator-model-profile deepseek_v4_flash_0731 \
   --difficulty hard --max-turns 20 --seed 42 \
-  --concurrency 1 --sample-retries 0 --no-update-memory \
-  --output-dir interaction_pipeline/runs_gp/full_smoke
+  --concurrency 16 --sample-retries 0 --no-update-memory \
+  --output-dir runs_batch_qwen_full/new_r20_experiment
 ```
 
-配对 Prompted Base 仅替换 baseline=`prompt_base`、profile=`qwen_3_6_27b_vllm_non_thinking`
-和独立 output-dir。其他五个设置替换上表 profile，各写独立目录。小批 pilot 使用
-`--all --limit 20`，保持同样样本顺序和 seed；完整实验待用户决定。
+原生事件保留各角色requested/raw_result/validated/failed、快照、契约、修复与提交回执；R20原生schema_version=2。实际可见回复需与pipeline的assistant_generation_completed对齐，不能仅用写前事件判定交付。provider尝试、内部修复、角色调用及延迟分开统计；缺失usage标未知，内部completion tokens不能代替最终可见正文tokens。
 
-事件中的 `llm_call.goal_progression` 保存状态前后、每角色 prompt/input hash、原始输出、
-结构化结果、计划、组装、回退和响应绑定账本；可见 transcript 只有真实对话。
-`internal_call_count` 统计包括格式重试的角色调用；`transport_attempts` 另记模型传输尝试。
-`wall_seconds` 是实际等待时间，不将两路延迟相加。
+v2.6候选采用不同schema/checkpoint协议，两个新消融profile已从活动目录移除，完整源码可在 [冻结版本](../v2_6/runs_batch_qwen_full/gp_v2_6/versions/v26_1/) 和 [候选目录](../v2_6/runs_batch_qwen_full/gp_v2_6/workspaces/v26_candidate/) 还原。不能将新profile单独放进R20源码执行。参见 [实现](../v2_6/runs_batch_qwen_full/gp_v2_6/IMPLEMENTATION.md)、[参数](../v2_6/runs_batch_qwen_full/gp_v2_6/PARAMETERS.md)、[离线复算](../v2_6/runs_batch_qwen_full/gp_v2_6/OFFLINE_REPRODUCTION.md)。
 
-`visible_response_tokens` 通过 vLLM `/tokenize` 对最终回复计数，禁用 special tokens；
-每轮额外有一次非生成的 tokenizer 请求。Tokenizer 不可用时记录 null，回复仍可交付；
-metrics 不会用内部 completion usage 替代未知可见计数。Generator usage 保留顶层旧接口，
-内部总成本读取角色账本。各 baseline 的统一离线计数见 [metrics README](../metrics/README_CN.md)。
-
-修复后已有 282 项离线回归及本地 Qwen 单轮重放；仍无新完整 episode 的 E/S 结论，
-Generator 在反复澄清案例上仍有语义遵从残留。详见 [修复报告](gp_fix_report.md)。
+v2.6历史阶段使用18/30次常规batch及1次前缀豁免。本次全量阶段已独立完成4次、1168次样本尝试，不沿用旧额度；DAG_fixed已修复5个样本，实际轨迹观测前缀异常0，运行转移代码未改动。四次择优是事后挑选表现，不能当作一次运行期望或相对Base的稳定优势。四个batch真实退出0；原执行器因外部修改未使用的first_16.jsonl而在完成后的严格检查中退出1，实际fixed数据和运行输入一致，详见最终结果中的证据记录。

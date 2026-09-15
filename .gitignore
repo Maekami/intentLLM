@@ -29,3 +29,10 @@ runs/*
 
 # Entire v2 archive is local-only; back up the live source/configuration instead.
 /v2/
+
+# Archived v2.5 implementation and experiments are local-only.
+/v2_5/
+
+/v2_6/
+
+/v3/

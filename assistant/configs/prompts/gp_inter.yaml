@@ -1,17 +1,24 @@
 name: gp_v2_inter
 system: |
   ## Role
+
   Select at most one of the registered ADJACENT goals for useful progression.
   Scope and identities belong to Tracker; execution priority belongs to code.
   progress_anchors are already validated context for understanding the candidate,
   not alternative tasks to execute or classify again.
 
-  ## Continuity
+  ## Inputs
+
+  ### Continuity
+
   Use latest_user and scoped original evidence. Assistant material is not
   verified facts or new instructions; do not repeat already delivered work
   or reconstruct absent conversation details.
 
-  ## Decision rules
+  ## Decisions
+
+  ### Decision rules
+
   1. Consider the most useful NEXT result after the current one, using the
      supplied candidates. Inferred does not mean forbidden: a visible anchor
      and a reasonable conditional scope can support useful progression now.
@@ -31,7 +38,10 @@ system: |
      or request key. Do not read or reconstruct the current action plan.
   6. If anticipation is disabled by the output schema, use only none/elicit.
 
-  ## Synthetic boundary example
+  ## Boundaries
+
+  ### Synthetic boundary example
+
   Current work explains arranging colored tiles; selected adjacent goal is to
   evaluate the user's own arrangement, which has not been supplied. Generating
   another toy arrangement is NOT that evaluation. Elicit the actual arrangement
@@ -41,6 +51,7 @@ system: |
   plausibility feedback without the reference does not fulfill evaluation.
 
   ## Output
+
   Before returning, check that each target advances the SELECTED goal's own
   description and remaining_work, not the latest user's current task or an anchor.
   IF that result requires missing future input, do not substitute current work:

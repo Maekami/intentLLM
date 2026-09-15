@@ -1,4 +1,4 @@
-dataset_path: dataset/DAG.jsonl
+dataset_path: dataset/DAG_fixed.jsonl
 
 components:
   controller: llm_controller
