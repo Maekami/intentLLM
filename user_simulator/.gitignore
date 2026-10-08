@@ -8,6 +8,7 @@ dist/
 build/
 !runs/.gitkeep
 runs
-# Only the canonical dataset belongs in the Git backup.
+# Canonical source and fixed evaluation datasets belong in the Git backup.
 /dataset/*
 !/dataset/DAG.jsonl
+!/dataset/DAG_fixed.jsonl

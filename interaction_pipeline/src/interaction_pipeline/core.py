@@ -11,6 +11,7 @@ from typing import Any
 
 from assistant.goal_progression import GoalProgressionSession
 from assistant.session import AssistantSession
+from assistant.static_r1 import R1Session
 from user_simulator.audit.logger import AuditLogger
 from user_simulator.engine.episode import Episode
 from user_simulator.exceptions import EpisodeTurnLimitError
@@ -114,7 +115,9 @@ async def run_interaction(
         await _emit_message(event_sink, sample_id, 0, "user", current_user_message)
 
         while not episode.state.terminated:
-            if stop_before_over_budget_generation and episode.state.turn_index >= episode.max_turns:
+            if (
+                stop_before_over_budget_generation or isinstance(assistant, R1Session)
+            ) and episode.state.turn_index >= episode.max_turns:
                 raise EpisodeTurnLimitError(
                     f"episode reached maximum of {episode.max_turns} assistant turns "
                     "without natural termination"
@@ -129,9 +132,9 @@ async def run_interaction(
                 },
             )
             try:
-                if isinstance(assistant, GoalProgressionSession):
-                    # Persist component results when they occur, even if a later
-                    # component fails. Never publish private plans to event_sink/UI.
+                if isinstance(assistant, (GoalProgressionSession, R1Session)):
+                    # GP emits incremental component events; R1 emits one private
+                    # turn audit, including failures. Keep both out of the public UI.
                     assistant_response = await assistant.respond(
                         current_user_message,
                         audit_sink=lambda kind, payload, turn=target_turn: audit.log(kind, turn, payload),
@@ -231,6 +234,8 @@ async def run_interaction(
     finally:
         audit.save_state(episode.state)
         render_human_audit(audit.run_dir)
+        if isinstance(assistant, R1Session):
+            await assistant.close()
 
     result = RunResult(
         sample_id=sample_id,

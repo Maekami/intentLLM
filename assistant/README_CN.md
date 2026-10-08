@@ -531,9 +531,19 @@ OpenRouter/vLLM 调用方式。记忆文件采用可人工审计的格式化 JSO
 - [Evo-Memory 论文（arXiv）](https://arxiv.org/abs/2511.20857)
 - [Evo-Memory 官方参考代码](https://github.com/zhaosnw/evo_mem)
 
-## Goal-Progression 静态系统（当前 R20 Format）
+## R1 静态 Agent（当前冻结版本）
 
-当前执行先读 [CURRENT_STATE](../CURRENT_STATE.md) 和 [V4 Static 任务书](plan_v4_static.md)。活动运行代码仍是经核验的 R20 Format；V4 的 Actor–Validator 尚待在独占工作区 `runs_batch_qwen_full/gp_v4/static/` 实现，后续 agent 的全部写入限于该目录。真实实验最多 30 批，允许两个 API key 同时运行两批；Evo 暂停。[V3 文档、代码副本与结果](../v3/README.md) 已整体归档，V2.6 与全量实验见 [v2_6](../v2_6/README.md)。下方通用接口示例不是要求在主目录启动 V4。
+当前主方法已冻结为 **R1**，通过 `--baseline static_r1` 使用；本地默认配置为 `configs/r1.yaml`。先阅读根目录 [CURRENT_STATE](../CURRENT_STATE.md) 和 [R1 架构与运行说明](R1_ARCHITECTURE.md)。R1 的信息流为 `(Tracker || Direct) → Intra → Inter → Editor`；Gemini minimal 与 Luna none 已完成合成及前 8 条真实运行兼容性验收，任务超限单独报告。自进化等待后续任务。
+
+```bash
+assistant-demo --config configs/r1.yaml
+assistant-demo --baseline static_r1 --model-profile gemini_3_6_flash_non_thinking
+assistant-demo --baseline static_r1 --model-profile gpt_5_6_luna_non_thinking
+```
+
+## 历史 Goal-Progression 系统（R20 Format）
+
+以下 `goal_progression` 接口保留历史实验用途。它与当前的 `static_r1` 分开选择，旧任务书/额度不再是当前执行指令。
 
 `goal_progression`通过现有factory与interaction pipeline使用。用户在v2.6阶段结束后明确指定 **R20 Format** 为主版本：R20逻辑与profile保持不变，仅接入四个已冻结的格式整理prompt，架构仍为`v2_contracts`，profile仍为`qwen_3_6_27b_gp`。默认数据改为`DAG_fixed.jsonl`，已完成全292样本四次实验，两个key各两次，共1168次尝试，sample_retries=0。四次均值E/S为4.5348/6.0649；每样本按S最小、再E最小选择完整轨迹后为3.5308/4.7808（287 SUCCESS、5超限）。接入后352项assistant测试通过（14.59s），独立统计复核通过；见[全量最终结果](../v2_6/runs_batch_qwen_full/r20_format_full292/RESULTS.md)。[v2.6结论](../v2_6/runs_batch_qwen_full/gp_v2_6/RESULTS.md)保留为历史证据。
 
@@ -557,7 +567,7 @@ Full主路径为Tracker → Intra / Inter并行 → Generator：正常有候选�
 
 其他启用结构化角色默认发送服务端schema，同时做本地校验。Generator虽采用prompt解码，也不能放行非法JSON或未知引用。正常停滞与缺少用户材料由正常策略处理；内部错误按所有权恢复，不能靠删除受影响的required工作冒充成功。当前R20没有v2.6新增的Goal.progress、max_adjacent_goals或额外执行反馈窗口。
 
-必须同时选择baseline和对应GP profile；GP与其他baseline、memory、skill不混用。本次Base仍使用既有 `prompt_base` + `qwen_3_6_27b_vllm_non_thinking`。历史no_tracker/no_intra/no_inter/joint/no_anticipate profile随R20原件恢复，其旧实验含义和结果见 [CURRENT_STATE](../CURRENT_STATE.md)；它们不是本轮v2.6单因素消融。
+必须同时选择baseline和对应GP profile；GP与其他baseline、memory、skill不混用。本次Base仍使用既有 `prompt_base` + `qwen_3_6_27b_vllm_non_thinking`。历史no_tracker/no_intra/no_inter/joint/no_anticipate profile随R20原件恢复，其旧实验含义和结果见 [CURRENT_STATE](../runs_batch_qwen_full/m_development_20260930/CURRENT_STATE.md)；它们不是本轮v2.6单因素消融。
 
 从仓库根目录运行assistant离线验收（不请求真实模型）：
 

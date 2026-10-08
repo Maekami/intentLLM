@@ -22,7 +22,7 @@ def main(
         None,
         "--baseline",
         help=(
-            "base, prompt_base, goal_progression, interactcomp_react, or trace2skill. base means no "
+            "base, prompt_base, static_r1, goal_progression, interactcomp_react, or trace2skill. base means no "
             "Prompted-Base prompt; a skill bound by a *_trace2skill model profile "
             "remains active."
         ),

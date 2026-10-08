@@ -28,6 +28,7 @@ from assistant.memory.store import JsonMemoryStore
 from assistant.prompt import SystemPrompt
 from assistant.session import AssistantSession
 from assistant.skill import StaticSkill
+from assistant.static_r1 import R1Baseline, R1Session
 
 
 class PromptArtifact(Protocol):
@@ -67,6 +68,11 @@ ASSISTANT_REGISTRY: dict[str, AssistantSpec] = {
 }
 
 BASELINE_REGISTRY: dict[str, BaselineSpec] = {
+    "static_r1": BaselineSpec(
+        constructor=R1Baseline,
+        prompt_config_key=None,
+        session_constructor=R1Session,
+    ),
     "goal_progression": BaselineSpec(
         constructor=GoalProgressionBaseline,
         prompt_config_key=None,
@@ -209,10 +215,12 @@ def build_assistant_components(
         baseline = resolved_baseline.spec.constructor()
 
     resolved_client = client
-    if resolved_client is None:
+    if resolved_client is None and resolved_baseline.name != "static_r1":
         resolved_client = OpenAICompatibleChatClient(profile, environment)
 
-    if profile.goal_progression is not None:
+    if resolved_baseline.name == "static_r1":
+        session = R1Session(profile=profile, environment=environment, client=resolved_client)
+    elif profile.goal_progression is not None:
         session = GoalProgressionSession(
             resolved_client,
             profile.generation["assistant"],
@@ -285,6 +293,12 @@ def _validate_profile_compatibility(
     profile: ModelProfile,
     resolved_baseline: ResolvedBaseline,
 ) -> None:
+    if resolved_baseline.name == "static_r1" and (
+        profile.memory is not None or profile.skill is not None or profile.goal_progression is not None
+    ):
+        raise ConfigurationError(
+            "static_r1 requires a plain model profile without memory, skill, or legacy GP"
+        )
     if resolved_baseline.name == "trace2skill" and profile.memory is not None:
         raise ConfigurationError(
             "the trace2skill baseline is static and requires a memory-free model profile"

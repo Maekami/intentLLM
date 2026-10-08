@@ -32,6 +32,7 @@ from assistant.goal_progression.prompts import snapshot as gp_snapshot
 from assistant.memory.models import MemoryEntry
 from assistant.prompt import SystemPrompt
 from assistant.skill import StaticSkill
+from assistant.static_r1 import snapshot as r1_snapshot
 from user_simulator.audit.logger import AuditLogger, read_git_commit
 from user_simulator.config import (
     EnvironmentSettings as SimulatorEnvironmentSettings,
@@ -267,6 +268,7 @@ class PreparedPipeline:
                 "baseline_source": resolved_baseline.source,
                 "active_prompt": active_prompt,
                 "goal_progression": gp_snapshot(assistant_profile),
+                "static_r1": r1_snapshot() if resolved_baseline.name == "static_r1" else None,
                 "action_guard": {
                     "enabled": action_guard_enabled,
                     "prompt": (
@@ -377,6 +379,9 @@ class PreparedPipeline:
                     mode="json"
                 ),
                 "assistant_goal_progression": gp_snapshot(assistant_components.model_profile),
+                "assistant_static_r1": (
+                    r1_snapshot() if active_baseline.name == "static_r1" else None
+                ),
                 "assistant_prompt": (
                     {
                         "name": assistant_components.prompt.name,

@@ -11,6 +11,7 @@ from assistant.config import EnvironmentSettings, load_config
 from assistant.exceptions import ConfigurationError, ModelRequestError
 from assistant.factory import build_assistant_components
 from assistant.session import AssistantSession
+from assistant.static_r1 import R1Session
 
 app = typer.Typer(add_completion=False, help="Run an interactive assistant baseline.")
 console = Console()
@@ -22,7 +23,7 @@ def main(
         None,
         "--baseline",
         help=(
-            "Baseline registry name: base, prompt_base, goal_progression, interactcomp_react, or "
+            "Baseline registry name: base, prompt_base, static_r1, goal_progression, interactcomp_react, or "
             "trace2skill. base adds no Prompted-Base prompt; a model-profile-bound "
             "skill remains active."
         ),
@@ -76,6 +77,14 @@ def main(
 
 
 async def _run(session: AssistantSession, *, message: str | None = None) -> None:
+    try:
+        await _conversation(session, message=message)
+    finally:
+        if isinstance(session, R1Session):
+            await session.close()
+
+
+async def _conversation(session: AssistantSession, *, message: str | None = None) -> None:
     console.print(
         Panel(
             f"Baseline: {session.baseline.name}\n"

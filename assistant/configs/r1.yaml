@@ -1,0 +1,6 @@
+# Frozen static agent; all model sampling comes from the selected plain profile.
+components:
+  baseline: static_r1
+  profile_skill_enabled: false
+models:
+  assistant: qwen_3_6_27b_vllm_non_thinking
